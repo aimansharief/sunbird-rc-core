@@ -107,6 +107,18 @@ describe('AuthGuard', () => {
         expect(result).toBe(true);
       });
 
+      it('attaches the verified token payload to request.user', async () => {
+        (guard as any).client = {
+          getSigningKey: (_kid: string, cb: any) => cb(null, { publicKey: publicKeyPem }),
+        };
+        const token = jwt.sign({ sub: 'svc-registry', authority: 'moe' }, privateKeyPem, { algorithm: 'RS256', keyid: kid });
+        const request: any = { headers: { authorization: `Bearer ${token}` } };
+
+        const result = await guard.canActivate({ getHandler: jest.fn(), switchToHttp: () => ({ getRequest: () => request }) });
+        expect(result).toBe(true);
+        expect(request.user).toMatchObject({ sub: 'svc-registry', authority: 'moe' });
+      });
+
       it('returns false for an expired token', async () => {
         (guard as any).client = {
           getSigningKey: (_kid: string, cb: any) => cb(null, { publicKey: publicKeyPem }),

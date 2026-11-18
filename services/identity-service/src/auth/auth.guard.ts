@@ -51,13 +51,12 @@ export class AuthGuard implements CanActivate {
     const bearerToken = authHeader.substring(7, authHeader.length);
     return new Promise((resolve) => {
       jwt.verify(bearerToken, this.getKey, (err, decoded) => {
-        if (err) {
-          this.logger.log(err);
-          resolve(false);
+        if (err || !decoded) {
+          if (err) this.logger.log(err);
+          return resolve(false);
         }
-        if (decoded)
-          resolve(true);
-        resolve(false);
+        request.user = decoded;
+        return resolve(true);
       });
     });
   }
