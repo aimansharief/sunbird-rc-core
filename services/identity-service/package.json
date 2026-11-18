@@ -43,6 +43,7 @@
     "@nestjs/swagger": "^6.1.4",
     "@nestjs/terminus": "^10.0.1",
     "@prisma/client": "4.8.1",
+    "axios": "^1.7.4",
     "crypto-ld": "3.9.0",
     "did-resolver": "^4.1.0",
     "encrypt-rsa": "^2.0.1",
