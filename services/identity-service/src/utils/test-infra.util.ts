@@ -53,16 +53,7 @@ export function createInMemoryPrismaMock(): any {
 function createInMemoryVaultMock(): any {
   const store = new Map<string, any>();
   return {
-    writePvtKey: jest.fn(async (secret: object, name: string) => {
-      store.set(name, secret);
-      return secret;
-    }),
     readPvtKey: jest.fn(async (name: string) => store.get(name) ?? null),
-    mergePvtKey: jest.fn(async (secret: object, name: string) => {
-      const merged = { ...(store.get(name) || {}), ...secret };
-      store.set(name, merged);
-      return merged;
-    }),
   };
 }
 
