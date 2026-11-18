@@ -1,6 +1,8 @@
-import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { HttpException, Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { PrismaService } from '../utils/prisma.service';
-import { VaultService } from '../utils/vault.service';
+import { SigningService } from '../keys/signing.service';
+import { KeyRegistryService } from '../keys/key-registry.service';
+import { SignContext } from '../keys/sign-context';
 import { Identity } from '@prisma/client';
 import * as nodeCrypto from 'crypto';
 // @types/node is pinned to 16.0.0 in this service (predates the `webcrypto`
@@ -20,13 +22,13 @@ export class MdocService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly vault: VaultService,
+    private readonly signing: SigningService,
+    private readonly registry: KeyRegistryService,
   ) {}
 
-  // Resolves the signer DID's EC P-256 (JsonWebKey2020) key material — the
-  // same Vault-backed lookup pattern vc.service.ts's sign() already uses for
-  // Ed25519, just for the JWK verification method type mdoc requires.
-  private async getSignerKeyMaterial(signerDID: string) {
+  // Finds the signer DID's active P-256 (JsonWebKey2020) key. Only its public
+  // half is read here; the private key stays in the KeyProvider.
+  private async getSignerKey(signerDID: string): Promise<{ keyId: string; publicKeyJwk: any }> {
     let did: Identity;
     try {
       did = await this.prisma.identity.findUnique({ where: { id: signerDID } });
@@ -37,18 +39,14 @@ export class MdocService {
     if (!did) throw new NotFoundException('Signer DID not found!');
 
     const didDoc = JSON.parse(did.didDoc as string);
-    const vm = (didDoc.verificationMethod || []).find((v: any) => v.type === 'JsonWebKey2020');
+    const active = await this.registry.findActive(signerDID, 'P-256');
+    const vm = active && (didDoc.verificationMethod || []).find((v: any) => v.id === active.id && v.publicKeyJwk);
     if (!vm) {
       throw new NotFoundException(
         `DID '${signerDID}' has no JsonWebKey2020 (EC P-256) verification method — required for mso_mdoc issuance`,
       );
     }
-    const privateKeys = (await this.vault.readPvtKey(signerDID)) || {};
-    const privateKeyJwk = privateKeys[vm.id]?.privateKeyJwk;
-    if (!privateKeyJwk) {
-      throw new InternalServerErrorException(`Private key for '${vm.id}' not found in Vault`);
-    }
-    return { publicKeyJwk: vm.publicKeyJwk, privateKeyJwk };
+    return { keyId: vm.id, publicKeyJwk: vm.publicKeyJwk };
   }
 
   // Generates a fresh self-signed X.509 cert wrapping the issuer's own
@@ -57,39 +55,62 @@ export class MdocService {
   // directly, not a PKI) — verification correspondingly always passes
   // `disableCertificateChainValidation: true`, so the cert only needs to
   // correctly wrap the actual signing key, not chain to anything.
+  // The certificate signature is made by the KeyProvider: @peculiar/x509 is
+  // given a crypto object whose subtle.sign is routed to SigningService.
   private async buildSelfSignedCert(
     signerDID: string,
+    keyId: string,
     publicKeyJwk: any,
-    privateKeyJwk: any,
+    ctx: SignContext,
   ): Promise<string> {
-    const publicKey = await webcrypto.subtle.importKey(
+    const subtle = webcrypto.subtle;
+    const publicKey = await subtle.importKey(
       'jwk',
       publicKeyJwk,
       { name: 'ECDSA', namedCurve: 'P-256' },
       true,
       ['verify'],
     );
-    const privateKey = await webcrypto.subtle.importKey(
-      'jwk',
-      privateKeyJwk,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      true,
-      ['sign'],
+    const signing = this.signing;
+    // WebCrypto ECDSA = sign SHA-256(data), return P1363 r||s: the same contract as SigningService for P-256.
+    const remoteCrypto = {
+      getRandomValues: (a: any) => webcrypto.getRandomValues(a),
+      subtle: new Proxy(subtle, {
+        get(target: any, prop: string) {
+          if (prop === 'sign') {
+            return async (_alg: any, _key: any, data: any) => {
+              const bytes = ArrayBuffer.isView(data)
+                ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+                : new Uint8Array(data);
+              const sig = await signing.sign(keyId, bytes, 'x509', ctx);
+              return sig.buffer.slice(sig.byteOffset, sig.byteOffset + sig.byteLength);
+            };
+          }
+          const value = target[prop];
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }),
+    };
+    const remotePrivateKey: any = {
+      type: 'private', extractable: false, usages: ['sign'], algorithm: { name: 'ECDSA', namedCurve: 'P-256' },
+    };
+    const cert = await x509.X509CertificateGenerator.createSelfSigned(
+      {
+        serialNumber: Date.now().toString(16),
+        // The standard org.iso.18013.5.1 (mDL) namespace requires the
+        // issuer cert's subject to carry a Country (C) — found live: without
+        // it, @auth0/mdl's own mDL-specific check
+        // ("Country name (C) must be present...") fails even though the
+        // signature itself verifies fine. Harmless placeholder for non-mDL
+        // custom namespaces too.
+        name: `CN=${signerDID}, C=US`,
+        notBefore: new Date(),
+        notAfter: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        keys: { publicKey, privateKey: remotePrivateKey },
+      },
+      remoteCrypto as any,
     );
-    const cert = await x509.X509CertificateGenerator.createSelfSigned({
-      serialNumber: Date.now().toString(16),
-      // The standard org.iso.18013.5.1 (mDL) namespace requires the
-      // issuer cert's subject to carry a Country (C) — found live: without
-      // it, @auth0/mdl's own mDL-specific check
-      // ("Country name (C) must be present...") fails even though the
-      // signature itself verifies fine. Harmless placeholder for non-mDL
-      // custom namespaces too.
-      name: `CN=${signerDID}, C=US`,
-      notBefore: new Date(),
-      notAfter: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
-      keys: { publicKey, privateKey },
-    });
     return cert.toString('pem');
   }
 
@@ -101,13 +122,11 @@ export class MdocService {
     docType: string,
     namespaces: Record<string, Record<string, any>>,
     deviceKeyJwk?: Record<string, any>,
+    ctx: SignContext = {},
   ): Promise<string> {
-    const { publicKeyJwk, privateKeyJwk } = await this.getSignerKeyMaterial(signerDID);
-    const issuerCertificate = await this.buildSelfSignedCert(
-      signerDID,
-      publicKeyJwk as any,
-      privateKeyJwk as any,
-    );
+    const { keyId, publicKeyJwk } = await this.getSignerKey(signerDID);
+    await this.signing.assertCanSign(keyId, 'mdoc', ctx);
+    const issuerCertificate = await this.buildSelfSignedCert(signerDID, keyId, publicKeyJwk, ctx);
 
     let document = new Document(docType);
     for (const [namespace, values] of Object.entries(namespaces)) {
@@ -119,15 +138,26 @@ export class MdocService {
     }
 
     try {
+      // @auth0/mdl only signs with a private JWK, so it signs with a throwaway
+      // key to build the COSE_Sign1 structure. The issuer signature is then
+      // recomputed by the KeyProvider over the same Sig_structure (built by
+      // the library's own encoder) and replaces the throwaway signature.
+      const { privateKey: throwaway } = nodeCrypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
       const signed = await document.sign({
-        issuerPrivateKey: privateKeyJwk as any,
+        issuerPrivateKey: throwaway.export({ format: 'jwk' }) as any,
         issuerCertificate,
         alg: 'ES256',
       });
+      const issuerAuth: any = signed.issuerSigned.issuerAuth;
+      const toBeSigned = issuerAuth.constructor.Signature1(
+        issuerAuth.encodedProtectedHeaders, new Uint8Array(), issuerAuth.payload,
+      );
+      issuerAuth.signature = await this.signing.sign(keyId, toBeSigned, 'mdoc', ctx);
       const { MDoc } = await import('@auth0/mdl');
       const mdoc = new MDoc([signed]);
       return mdoc.encode().toString('base64url');
     } catch (err) {
+      if (err instanceof HttpException) throw err;
       this.logger.error('Error signing mdoc:', err);
       throw new InternalServerErrorException('Error signing mdoc');
     }

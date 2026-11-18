@@ -82,12 +82,14 @@ export class VcController {
       namespaces: Record<string, Record<string, any>>;
       deviceKeyJwk?: Record<string, any>;
     },
+    @Req() req: any,
   ) {
     const mdoc = await this.mdocSigner.signMdoc(
       body.DID,
       body.docType,
       body.namespaces,
       body.deviceKeyJwk,
+      signContextFrom(req),
     );
     return { mdoc };
   }

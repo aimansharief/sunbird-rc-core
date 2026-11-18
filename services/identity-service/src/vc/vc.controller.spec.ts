@@ -159,9 +159,9 @@ describe('VcController', () => {
       };
       jest.spyOn(mdocSigner, 'signMdoc').mockResolvedValue('encoded-mdoc');
 
-      const result = await controller.signMdoc(body);
+      const result = await controller.signMdoc(body, {});
       expect(result).toEqual({ mdoc: 'encoded-mdoc' });
-      expect(mdocSigner.signMdoc).toHaveBeenCalledWith(body.DID, body.docType, body.namespaces, undefined);
+      expect(mdocSigner.signMdoc).toHaveBeenCalledWith(body.DID, body.docType, body.namespaces, undefined, {});
     });
 
     it('passes through an explicit deviceKeyJwk', async () => {
@@ -173,8 +173,8 @@ describe('VcController', () => {
       };
       jest.spyOn(mdocSigner, 'signMdoc').mockResolvedValue('encoded-mdoc');
 
-      await controller.signMdoc(body);
-      expect(mdocSigner.signMdoc).toHaveBeenCalledWith(body.DID, body.docType, body.namespaces, body.deviceKeyJwk);
+      await controller.signMdoc(body, {});
+      expect(mdocSigner.signMdoc).toHaveBeenCalledWith(body.DID, body.docType, body.namespaces, body.deviceKeyJwk, {});
     });
   });
 

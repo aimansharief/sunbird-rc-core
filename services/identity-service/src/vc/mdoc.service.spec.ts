@@ -2,7 +2,8 @@ import * as crypto from 'crypto';
 import { NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { MdocService } from './mdoc.service';
 import { PrismaService } from '../utils/prisma.service';
-import { VaultService } from '../utils/vault.service';
+import { createInMemoryPrismaMock } from '../utils/test-infra.util';
+import { createTestSigning } from '../keys/testing/test-signing.util';
 
 describe('MdocService', () => {
   const signerDID = 'did:rcw:signer-1';
@@ -10,24 +11,18 @@ describe('MdocService', () => {
   const docType = 'org.iso.18013.5.1.mDL';
 
   let prisma: { identity: { findUnique: jest.Mock } };
-  let vault: { readPvtKey: jest.Mock };
+  let t: ReturnType<typeof createTestSigning>;
   let service: MdocService;
-  let publicKeyJwk: any;
-  let privateKeyJwk: any;
-
-  beforeAll(() => {
-    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-    publicKeyJwk = publicKey.export({ format: 'jwk' });
-    privateKeyJwk = privateKey.export({ format: 'jwk' });
-  });
 
   beforeEach(() => {
     prisma = { identity: { findUnique: jest.fn() } };
-    vault = { readPvtKey: jest.fn() };
-    service = new MdocService(prisma as unknown as PrismaService, vault as unknown as VaultService);
+    t = createTestSigning(createInMemoryPrismaMock());
+    service = new MdocService(prisma as unknown as PrismaService, t.signing, t.registry);
   });
 
-  function primeSigner() {
+  // The issuer's P-256 key lives in the (test) key provider; the DID document carries only its public half.
+  async function primeSigner() {
+    const publicKeyJwk = await t.signing.createKey({ keyId: vmId, did: signerDID, algorithm: 'P-256' });
     prisma.identity.findUnique.mockResolvedValue({
       id: signerDID,
       didDoc: JSON.stringify({
@@ -35,7 +30,6 @@ describe('MdocService', () => {
         verificationMethod: [{ id: vmId, type: 'JsonWebKey2020', controller: signerDID, publicKeyJwk }],
       }),
     });
-    vault.readPvtKey.mockResolvedValue({ [vmId]: { privateKeyJwk } });
   }
 
   it('should be defined', () => {
@@ -44,7 +38,7 @@ describe('MdocService', () => {
 
   describe('signMdoc', () => {
     it('signs an mdoc for a DID with a JsonWebKey2020 verification method', async () => {
-      primeSigner();
+      await primeSigner();
       const mdoc = await service.signMdoc(signerDID, docType, {
         'org.iso.18013.5.1': { given_name: 'Alice', family_name: 'Doe' },
       });
@@ -53,7 +47,7 @@ describe('MdocService', () => {
     });
 
     it('accepts an optional deviceKeyJwk', async () => {
-      primeSigner();
+      await primeSigner();
       const { publicKey: deviceKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
       const deviceKeyJwk = deviceKey.export({ format: 'jwk' });
       const mdoc = await service.signMdoc(
@@ -87,22 +81,44 @@ describe('MdocService', () => {
       await expect(service.signMdoc(signerDID, docType, {})).rejects.toThrow(/JsonWebKey2020/);
     });
 
-    it('throws InternalServerErrorException when the private key is missing from Vault', async () => {
+    it('throws NotFoundException when the P-256 key is not in the key registry (unmigrated DID)', async () => {
       prisma.identity.findUnique.mockResolvedValue({
         id: signerDID,
         didDoc: JSON.stringify({
           id: signerDID,
-          verificationMethod: [{ id: vmId, type: 'JsonWebKey2020', publicKeyJwk }],
+          verificationMethod: [{ id: vmId, type: 'JsonWebKey2020', publicKeyJwk: { kty: 'EC', crv: 'P-256' } }],
         }),
       });
-      vault.readPvtKey.mockResolvedValue({});
-      await expect(service.signMdoc(signerDID, docType, {})).rejects.toThrow(InternalServerErrorException);
+      await expect(service.signMdoc(signerDID, docType, {})).rejects.toThrow(/JsonWebKey2020/);
+    });
+
+    it('signs the certificate and the COSE issuer signature with the provider-held key', async () => {
+      await primeSigner();
+      const purposes: string[] = [];
+      const original = t.signing.sign.bind(t.signing);
+      jest.spyOn(t.signing, 'sign').mockImplementation(async (keyId, data, purpose, ctx) => {
+        purposes.push(purpose);
+        return original(keyId, data, purpose, ctx);
+      });
+      const mdoc = await service.signMdoc(signerDID, docType, { 'org.iso.18013.5.1': { family_name: 'Doe' } });
+      expect(purposes).toEqual(['x509', 'mdoc']);
+      expect((await service.verifyMdoc(mdoc)).verified).toBe(true);
+    });
+
+    it('refuses callers from another authority', async () => {
+      const publicKeyJwk = await t.signing.createKey({ keyId: vmId, did: signerDID, algorithm: 'P-256', authority: 'moe' });
+      prisma.identity.findUnique.mockResolvedValue({
+        id: signerDID,
+        didDoc: JSON.stringify({ id: signerDID, verificationMethod: [{ id: vmId, type: 'JsonWebKey2020', publicKeyJwk }] }),
+      });
+      await expect(service.signMdoc(signerDID, docType, { ns: { a: 1 } }, undefined, { authority: 'agri' }))
+        .rejects.toThrow('not authorised');
     });
   });
 
   describe('verifyMdoc', () => {
     it('verifies a genuine signed mdoc round-trip', async () => {
-      primeSigner();
+      await primeSigner();
       const namespaces = { 'org.iso.18013.5.1': { given_name: 'Alice', family_name: 'Doe' } };
       const mdoc = await service.signMdoc(signerDID, docType, namespaces);
 
@@ -119,7 +135,7 @@ describe('MdocService', () => {
     });
 
     it('detects a tampered signature', async () => {
-      primeSigner();
+      await primeSigner();
       const mdoc = await service.signMdoc(signerDID, docType, {
         'org.iso.18013.5.1': { given_name: 'Alice' },
       });
