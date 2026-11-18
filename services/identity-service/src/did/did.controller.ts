@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -24,6 +25,7 @@ type DIDDocument = typeof DIDDocument;
 import { DidService } from './did.service';
 import { GenerateDidRequestDTO } from './dtos/GenerateDidRequest.dto';
 import { signContextFrom } from '../keys/sign-context';
+import { RotateKeyDTO } from './dtos/RotateKey.dto';
 const pLimit = require('p-limit');
 const limit = pLimit(100);
 
@@ -51,6 +53,16 @@ export class DidController {
       Logger.error(err);
       throw new InternalServerErrorException(err?.message);
     }
+  }
+
+  @ApiOperation({ summary: 'Rotate the active signing key of a DID' })
+  @ApiOkResponse({ description: 'Updated DID document' })
+  @Post('/did/:id/keys/rotate')
+  async rotateKey(@Param('id') id: string, @Body() body: RotateKeyDTO, @Req() req: any): Promise<DIDDocument> {
+    if (!['Ed25519', 'P-256'].includes(body?.algorithm)) {
+      throw new BadRequestException("algorithm must be 'Ed25519' or 'P-256'");
+    }
+    return this.didService.rotateKey(id, body.algorithm, body.revokePrevious === true, signContextFrom(req));
   }
 
   @ApiOperation({ summary: 'Resolve a DID ID' })

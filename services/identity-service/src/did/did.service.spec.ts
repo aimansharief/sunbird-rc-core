@@ -199,6 +199,56 @@ describe('DidService', () => {
     expect(result.id).toContain('did:web:example.com:identity');
   });
 
+  describe('rotateKey', () => {
+    it('retires the old key, adds a new one, and signing moves to the new key', async () => {
+      const created = await service.generateDID(doc);
+      const rotated = await service.rotateKey(created.id, 'Ed25519', false, {});
+      expect(rotated.verificationMethod.map((v) => v.id)).toEqual([`${created.id}#key-0`, `${created.id}#key-1`]);
+      expect(rotated.assertionMethod).toEqual([`${created.id}#key-0`, `${created.id}#key-1`]);
+      expect((await t.registry.findById(`${created.id}#key-0`)).status).toBe('RETIRED');
+      expect((await t.registry.findActive(created.id, 'Ed25519')).id).toBe(`${created.id}#key-1`);
+      await expect(t.signing.sign(`${created.id}#key-0`, Buffer.from('x'), 'ldp_vc')).rejects.toThrow('RETIRED');
+      expect(await service.resolveDID(created.id)).toEqual(rotated);
+    });
+
+    it('revokes: removes the old key from the DID document', async () => {
+      const created = await service.generateDID(doc);
+      const rotated = await service.rotateKey(created.id, 'Ed25519', true, {});
+      expect(rotated.verificationMethod.map((v) => v.id)).toEqual([`${created.id}#key-1`]);
+      expect(rotated.authentication).toEqual([`${created.id}#key-1`]);
+      expect((await t.registry.findById(`${created.id}#key-0`)).status).toBe('REVOKED');
+    });
+
+    it('continues the #jwt-key-N series and keeps the JWK metadata', async () => {
+      const created = await service.generateDID({ ...doc, keyPairType: VerificationKeyType.JsonWebKey2020 });
+      const stored = await service.resolveDID(created.id);
+      stored.verificationMethod[0].id = `${created.id}#jwt-key-1`;
+      stored.verificationMethod[0].publicKeyJwk.alg = 'ES256';
+      stored.assertionMethod = [`${created.id}#jwt-key-1`];
+      jest.spyOn(prisma.identity, 'findUnique').mockResolvedValueOnce({ id: created.id, didDoc: JSON.stringify(stored) } as any);
+      jest.spyOn(t.registry, 'findActive').mockResolvedValueOnce({
+        ...(await t.registry.findById(`${created.id}#key-0`)), id: `${created.id}#jwt-key-1`,
+      } as any);
+      jest.spyOn(t.signing, 'assertCanSign').mockResolvedValueOnce(undefined as any);
+      jest.spyOn(t.registry, 'setStatus').mockResolvedValueOnce(undefined as any);
+      const rotated = await service.rotateKey(created.id, 'P-256', false, {});
+      const added = rotated.verificationMethod[rotated.verificationMethod.length - 1];
+      expect(added.id).toBe(`${created.id}#jwt-key-2`);
+      expect(added.publicKeyJwk).toMatchObject({ alg: 'ES256', use: 'sig', kid: `${created.id}#jwt-key-2` });
+    });
+
+    it('refuses rotation by another authority', async () => {
+      const created = await service.generateDID(doc, { authority: 'moe' });
+      await expect(service.rotateKey(created.id, 'Ed25519', false, { authority: 'agri' })).rejects.toThrow('not authorised');
+      expect((await t.registry.findById(`${created.id}#key-0`)).status).toBe('ACTIVE');
+    });
+
+    it('404s when there is no active key of that algorithm', async () => {
+      const created = await service.generateDID(doc);
+      await expect(service.rotateKey(created.id, 'P-256', false, {})).rejects.toThrow('no active P-256 key');
+    });
+  });
+
   it('throw exception when web did base url is not set', () => {
     service.webDidPrefix = undefined;
     expect(() => service.getWebDidIdForId('abc'))
