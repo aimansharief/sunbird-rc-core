@@ -1,9 +1,11 @@
-import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../utils/prisma.service';
 import { DidService } from '../did/did.service';
 const { DIDDocument } = require('did-resolver');
 type DIDDocument = typeof DIDDocument;
-import { VaultService } from '../utils/vault.service';
+import { SigningService } from '../keys/signing.service';
+import { KeyRegistryService } from '../keys/key-registry.service';
+import { SignContext } from '../keys/sign-context';
 import { Identity } from '@prisma/client';
 import * as jsigs from '@digitalcredentials/jsonld-signatures';
 import * as jsigs2 from 'jsonld-signatures';
@@ -32,7 +34,8 @@ export default class VcService {
   constructor(
     private readonly primsa: PrismaService,
     private readonly didService: DidService,
-    private readonly vault: VaultService,
+    private readonly signing: SigningService,
+    private readonly registry: KeyRegistryService,
   ) {
     this.init();
   }
@@ -51,7 +54,7 @@ export default class VcService {
     this.map.RsaVerificationKey2018 = RSAKeyPair;
   }
 
-  async sign(signerDID: string, toSign: object) {
+  async sign(signerDID: string, toSign: object, ctx: SignContext = {}) {
     let did: Identity;
     try {
       did = await this.primsa.identity.findUnique({
@@ -64,21 +67,38 @@ export default class VcService {
 
     if (!did) throw new NotFoundException('Signer DID not found!');
 
+    const didDoc = (JSON.parse(did.didDoc as string) as DIDDocument);
+    const active = await this.registry.findActive(signerDID, 'Ed25519');
+    if (!active) {
+      throw new BadRequestException(
+        `DID '${signerDID}' has no active Ed25519 signing key (JSON-LD signing needs Ed25519; RSA is not supported). ` +
+        'If this DID predates the key-provider migration, run yarn keys:migrate.',
+      );
+    }
+    await this.signing.assertCanSign(active.id, 'ldp_vc', ctx);
+    const verificationMethod = (didDoc.verificationMethod || []).find((vm: any) => vm.id === active.id);
+    const signatureType = this.signTypeForKey[verificationMethod?.type];
+    if (!verificationMethod || !signatureType || signatureType === 'RsaSignature2018') {
+      throw new InternalServerErrorException(`Active key '${active.id}' has no usable verification method on the DID document`);
+    }
+    if (!this.map[signatureType]) await this.init();
+
+    // The suite canonicalises and hashes the document; only those bytes are sent to the key provider.
+    const signer = {
+      id: verificationMethod.id,
+      algorithm: 'Ed25519',
+      sign: async ({ data }: { data: Uint8Array }) => this.signing.sign(verificationMethod.id, data, 'ldp_vc', ctx),
+    };
     try {
-      const didDoc = (JSON.parse(did.didDoc as string) as DIDDocument);
-      const verificationMethod = didDoc.verificationMethod[0];
-      const suite = await this.getSuite(verificationMethod, this.signTypeForKey[verificationMethod?.type], true);
-      const signatures = verificationMethod.type === "RsaVerificationKey2018" ? jsigs2: jsigs;
-      const signedVC = await signatures.sign({...toSign}, {
-          purpose: new AssertionProofPurpose(),
-          suite: suite,
-          documentLoader: this.getDocumentLoader(didDoc),
-          addSuiteContext: true,
-          compactProof: false
-        });
-      return signedVC;
+      return await jsigs.sign({...toSign}, {
+        purpose: new AssertionProofPurpose(),
+        suite: new this.map[signatureType]({ signer }),
+        documentLoader: this.getDocumentLoader(didDoc),
+        addSuiteContext: true,
+        compactProof: false
+      });
     } catch (err) {
-      console.log("Log: ", JSON.stringify(err, null, 4));
+      if (err instanceof HttpException) throw err;
       Logger.error('Error signing the document:', err);
       throw new InternalServerErrorException(`Error signing the document`);
     }
@@ -94,7 +114,9 @@ export default class VcService {
     }
 
     try {
-      const verificationMethod = didDocument.verificationMethod[0];
+      const verificationMethod =
+        (didDocument.verificationMethod || []).find((vm: any) => vm.id === signedDoc?.proof?.verificationMethod)
+        ?? didDocument.verificationMethod[0];
       const suite = await this.getSuite(verificationMethod, signedDoc?.proof?.type);
       const signatures = verificationMethod.type === "RsaVerificationKey2018" ? jsigs2: jsigs;
       const results = await signatures.verify(signedDoc, {
@@ -110,7 +132,7 @@ export default class VcService {
     }
   }
 
-  async getSuite(verificationMethod, signatureType: string, withPrivateKey = false) {
+  async getSuite(verificationMethod, signatureType: string) {
     const supportedSignatures = {
       "Ed25519Signature2020": ["Ed25519VerificationKey2020", "JsonWebKey2020", "Ed25519VerificationKey2018"],
       "Ed25519Signature2018": ["Ed25519VerificationKey2018"],
@@ -124,12 +146,6 @@ export default class VcService {
     }
     if(!supportedSignatures[signatureType]) await this.init();
     let keyPair = await this.map[verificationMethod?.type].from(verificationMethod);
-    if(withPrivateKey) {
-      const privateKeys = await this.vault.readPvtKey(verificationMethod.id.split("#")[0]) || {};
-      Object.keys(privateKeys[verificationMethod.id] || {}).forEach(key => {
-        keyPair[key] = privateKeys[verificationMethod.id][key];
-      });
-    }
     return new this.map[signatureType]({key: keyPair});
   }
 

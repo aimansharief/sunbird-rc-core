@@ -1,4 +1,5 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Post, Req } from '@nestjs/common';
+import { signContextFrom } from '../keys/sign-context';
 import { SignJsonDTO } from './dtos/Sign.dto';
 import { VerifyJsonDTO } from './dtos/Verify.dto';
 import {
@@ -26,8 +27,8 @@ export class VcController {
   @ApiBadRequestResponse({ description: 'Bad Request' })
   @ApiInternalServerErrorResponse({ description: 'Internal Server Error' })
   @Post('/sign')
-  sign(@Body() body: SignJsonDTO) {
-    return this.VcService.sign(body.DID, body.payload);
+  sign(@Body() body: SignJsonDTO, @Req() req: any) {
+    return this.VcService.sign(body.DID, body.payload, signContextFrom(req));
   }
 
   @ApiOperation({ summary: 'Verify a signed VC' })

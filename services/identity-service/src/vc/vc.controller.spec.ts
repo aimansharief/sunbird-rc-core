@@ -66,9 +66,9 @@ describe('VcController', () => {
 
       const signedVc = 'signedVC';
       jest.spyOn(service, 'sign').mockImplementation(async () => signedVc);
-      const result = await controller.sign(body);
+      const result = await controller.sign(body, { user: { sub: 'svc', authority: 'moe' } });
       expect(result).toEqual(signedVc);
-      expect(service.sign).toHaveBeenCalledWith(body.DID, body.payload);
+      expect(service.sign).toHaveBeenCalledWith(body.DID, body.payload, { actor: 'svc', authority: 'moe' });
     });
   });
 

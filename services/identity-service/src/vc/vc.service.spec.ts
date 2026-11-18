@@ -1,19 +1,19 @@
-import { NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import VcService from './vc.service';
 import { PrismaService } from '../utils/prisma.service';
 import { DidService } from '../did/did.service';
-import { VaultService } from '../utils/vault.service';
 import { VerificationKeyType } from '../did/dtos/GenerateDidRequest.dto';
-import { createPrismaServiceOrMock, createVaultServiceOrMock } from '../utils/test-infra.util';
+import { createPrismaServiceOrMock } from '../utils/test-infra.util';
+import { createTestSigning } from '../keys/testing/test-signing.util';
 
 describe('VcService', () => {
   let service: VcService;
   let prisma: PrismaService;
-  let vault: VaultService;
+  let t: ReturnType<typeof createTestSigning>;
   let didService: DidService;
   let didDoc: any;
   let ed2018Doc: any;
-  let rsaDoc: any;
+  let p256Doc: any;
 
   const signPayload = {
     '@context': {
@@ -24,8 +24,8 @@ describe('VcService', () => {
 
   beforeAll(async () => {
     prisma = await createPrismaServiceOrMock();
-    vault = await createVaultServiceOrMock();
-    didService = new DidService(prisma, vault);
+    t = createTestSigning(prisma);
+    didService = new DidService(prisma, t.signing, t.registry);
     didService.signingAlgorithm = 'Ed25519Signature2020';
 
     didDoc = await didService.generateDID({ alsoKnownAs: [], services: [], method: 'test' });
@@ -35,16 +35,16 @@ describe('VcService', () => {
       method: 'test',
       keyPairType: VerificationKeyType.Ed25519VerificationKey2018,
     });
-    rsaDoc = await didService.generateDID({
+    p256Doc = await didService.generateDID({
       alsoKnownAs: [],
       services: [],
       method: 'test',
-      keyPairType: VerificationKeyType.RsaVerificationKey2018,
+      keyPairType: VerificationKeyType.JsonWebKey2020,
     });
   });
 
   beforeEach(async () => {
-    service = new VcService(prisma, didService, vault);
+    service = new VcService(prisma, didService, t.signing, t.registry);
     await service.init();
   });
 
@@ -70,6 +70,27 @@ describe('VcService', () => {
     expect(verified).toEqual(true);
   });
 
+  it('signs through the KeyProvider and the proof names the signing key', async () => {
+    const signSpy = jest.spyOn(t.provider, 'sign');
+    const signed: any = await service.sign(didDoc.id, signPayload);
+    expect(signSpy).toHaveBeenCalledTimes(1);
+    expect(signed.proof.verificationMethod).toBe(`${didDoc.id}#key-0`);
+    expect(await service.verify(didDoc.id, signed)).toBe(true);
+  });
+
+  it('denies callers from another authority', async () => {
+    const owned = await didService.generateDID({ alsoKnownAs: [], services: [], method: 'test' }, { authority: 'moe' });
+    await expect(service.sign(owned.id, signPayload, { authority: 'agri' })).rejects.toThrow('not authorised');
+  });
+
+  it('verifies with the key named in proof.verificationMethod, not just the first key', async () => {
+    const signed: any = await service.sign(didDoc.id, signPayload);
+    const doc = await didService.resolveDID(didDoc.id);
+    doc.verificationMethod.unshift({ ...doc.verificationMethod[0], id: `${didDoc.id}#decoy`, publicKeyMultibase: 'z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK' });
+    jest.spyOn(didService, 'resolveDID').mockResolvedValueOnce(doc);
+    expect(await service.verify(didDoc.id, signed)).toBe(true);
+  });
+
   it('should fail to verify a tampered payload', async () => {
     const signedPayload = await service.sign(didDoc.id, signPayload);
     signedPayload.name = 'Hello changed';
@@ -80,11 +101,8 @@ describe('VcService', () => {
   });
 
   describe('additional signature suites', () => {
-    it('signs and verifies with RsaSignature2018 (RsaVerificationKey2018)', async () => {
-      const signed = await service.sign(rsaDoc.id, signPayload);
-      expect(signed.proof).toBeDefined();
-      const verified = await service.verify(rsaDoc.id, signed);
-      expect(verified).toEqual(true);
+    it('refuses JSON-LD signing for a DID without an Ed25519 key', async () => {
+      await expect(service.sign(p256Doc.id, signPayload)).rejects.toThrow(BadRequestException);
     });
 
     it('signs and verifies with Ed25519Signature2018 (Ed25519VerificationKey2018)', async () => {
