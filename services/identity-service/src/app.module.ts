@@ -13,9 +13,11 @@ import { AuthGuard } from './auth/auth.guard';
 import { TerminusModule } from '@nestjs/terminus';
 import { PrismaHealthIndicator } from './utils/prisma.health';
 import { VaultHealthIndicator } from './utils/vault.health';
+import { KeysModule } from './keys/keys.module';
 
 @Module({
   imports: [
+    KeysModule,
     DidModule,
     VcModule,
     HttpModule,
