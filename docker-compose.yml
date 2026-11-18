@@ -241,6 +241,12 @@ services:
       - JWKS_URI=${JWKS_URI}
       - ENABLE_AUTH=${ENABLE_AUTH}
       - WEB_DID_BASE_URL=${WEB_DID_BASE_URL}
+      # Signing keys: where private keys live and are used (they never enter this service).
+      - KEY_PROVIDER=${KEY_PROVIDER-vault-transit}
+      - VAULT_TRANSIT_MOUNT=${VAULT_TRANSIT_MOUNT-transit}
+      - REQUIRED_KEY_ALGORITHMS=${REQUIRED_KEY_ALGORITHMS-Ed25519,P-256}
+      - ENFORCE_KEY_AUTHORITY=${ENFORCE_KEY_AUTHORITY-true}
+      - AUTHORITY_CLAIM=${AUTHORITY_CLAIM-authority}
     healthcheck:
       test:
         [ "CMD-SHELL", "curl -f http://localhost:3332/health || exit 1" ]
