@@ -64,6 +64,7 @@ if [[ $vault_status == *"Initialized     true"* ]]; then
 else
   sed -i "s/VAULT_TOKEN=.*/VAULT_TOKEN=$root_token/" ".env"
   docker-compose -f "$COMPOSE_FILE" exec -e VAULT_TOKEN=$root_token -T "$SERVICE_NAME" vault secrets enable -path=kv kv-v2
+  docker-compose -f "$COMPOSE_FILE" exec -e VAULT_TOKEN=$root_token -T "$SERVICE_NAME" vault secrets enable transit
 fi
 
 echo -e "\nNOTE: KEYS ARE STORED IN keys.txt"

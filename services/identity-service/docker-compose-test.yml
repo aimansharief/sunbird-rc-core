@@ -58,6 +58,11 @@ services:
       JWKS_URI: ""
       ENABLE_AUTH: "false"
       WEB_DID_BASE_URL: "https://example.com/identity"
+      KEY_PROVIDER: "vault-transit"
+      VAULT_TRANSIT_MOUNT: "transit"
+      REQUIRED_KEY_ALGORITHMS: "Ed25519,P-256"
+      ENFORCE_KEY_AUTHORITY: "true"
+      AUTHORITY_CLAIM: "authority"
     networks:
       test:
     healthcheck:
