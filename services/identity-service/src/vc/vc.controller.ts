@@ -40,8 +40,8 @@ export class VcController {
   @ApiOperation({ summary: 'Sign a payload as a compact JWS/JWT (ES256)' })
   @ApiOkResponse({ description: 'Signed JWT returned' })
   @Post('/sign-jwt')
-  async signJwt(@Body() body: SignJwtDTO) {
-    const jwt = await this.jwtSigner.signJwt(body.DID, body.payload, body.header || {});
+  async signJwt(@Body() body: SignJwtDTO, @Req() req: any) {
+    const jwt = await this.jwtSigner.signJwt(body.DID, body.payload, body.header || {}, signContextFrom(req));
     return { jwt };
   }
 
@@ -54,12 +54,13 @@ export class VcController {
   @ApiOperation({ summary: 'Sign an SD-JWT with selectively disclosable claims' })
   @ApiOkResponse({ description: 'SD-JWT returned' })
   @Post('/sign-sd-jwt')
-  async signSdJwt(@Body() body: SignSdJwtDTO) {
+  async signSdJwt(@Body() body: SignSdJwtDTO, @Req() req: any) {
     const sdJwt = await this.jwtSigner.signSdJwt(
       body.DID,
       body.payload,
       body.disclosable || [],
       body.header || {},
+      signContextFrom(req),
     );
     return { sdJwt };
   }

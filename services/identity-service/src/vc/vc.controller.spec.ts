@@ -93,17 +93,17 @@ describe('VcController', () => {
       const body: SignJwtDTO = { DID: 'exampleDID', payload: { sub: 'holder' } };
       jest.spyOn(jwtSigner, 'signJwt').mockResolvedValue('signed.jwt.token');
 
-      const result = await controller.signJwt(body);
+      const result = await controller.signJwt(body, {});
       expect(result).toEqual({ jwt: 'signed.jwt.token' });
-      expect(jwtSigner.signJwt).toHaveBeenCalledWith(body.DID, body.payload, {});
+      expect(jwtSigner.signJwt).toHaveBeenCalledWith(body.DID, body.payload, {}, {});
     });
 
     it('passes through an explicit header', async () => {
       const body: SignJwtDTO = { DID: 'exampleDID', payload: {}, header: { typ: 'JWT' } };
       jest.spyOn(jwtSigner, 'signJwt').mockResolvedValue('signed.jwt.token');
 
-      await controller.signJwt(body);
-      expect(jwtSigner.signJwt).toHaveBeenCalledWith(body.DID, body.payload, { typ: 'JWT' });
+      await controller.signJwt(body, {});
+      expect(jwtSigner.signJwt).toHaveBeenCalledWith(body.DID, body.payload, { typ: 'JWT' }, {});
     });
   });
 
@@ -124,17 +124,17 @@ describe('VcController', () => {
       const body: SignSdJwtDTO = { DID: 'exampleDID', payload: { name: 'Alice' }, disclosable: ['name'] };
       jest.spyOn(jwtSigner, 'signSdJwt').mockResolvedValue('jws~disclosure~');
 
-      const result = await controller.signSdJwt(body);
+      const result = await controller.signSdJwt(body, {});
       expect(result).toEqual({ sdJwt: 'jws~disclosure~' });
-      expect(jwtSigner.signSdJwt).toHaveBeenCalledWith(body.DID, body.payload, body.disclosable, {});
+      expect(jwtSigner.signSdJwt).toHaveBeenCalledWith(body.DID, body.payload, body.disclosable, {}, {});
     });
 
     it('defaults disclosable to [] and header to {} when omitted', async () => {
       const body: SignSdJwtDTO = { DID: 'exampleDID', payload: { name: 'Alice' } };
       jest.spyOn(jwtSigner, 'signSdJwt').mockResolvedValue('jws~');
 
-      await controller.signSdJwt(body);
-      expect(jwtSigner.signSdJwt).toHaveBeenCalledWith(body.DID, body.payload, [], {});
+      await controller.signSdJwt(body, {});
+      expect(jwtSigner.signSdJwt).toHaveBeenCalledWith(body.DID, body.payload, [], {}, {});
     });
   });
 

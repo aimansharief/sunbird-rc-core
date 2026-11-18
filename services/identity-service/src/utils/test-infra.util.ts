@@ -41,7 +41,7 @@ function createTable(defaults: Record<string, any> = {}) {
   };
 }
 
-function createInMemoryPrismaMock(): any {
+export function createInMemoryPrismaMock(): any {
   return {
     identity: createTable(),
     signingKey: createTable({ status: 'ACTIVE' }), // mirrors the DB column default

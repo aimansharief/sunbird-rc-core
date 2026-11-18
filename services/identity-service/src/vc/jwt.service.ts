@@ -4,10 +4,13 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  HttpException,
 } from '@nestjs/common';
 import { PrismaService } from '../utils/prisma.service';
 import { resolveSelfContainedDidToJwk } from '../utils/self-contained-did.util';
-import { VaultService } from '../utils/vault.service';
+import { SigningService } from '../keys/signing.service';
+import { KeyRegistryService } from '../keys/key-registry.service';
+import { SignContext } from '../keys/sign-context';
 import { DidService } from '../did/did.service';
 import { Identity } from '@prisma/client';
 import * as crypto from 'crypto';
@@ -26,20 +29,18 @@ export interface SdJwtVerifyResult {
 // Additive to the existing JSON-LD signing path in VcService:
 // - P-256 (ES256) keys are appended as extra verificationMethods on the DID
 //   document (index >= 1), so VcService.sign() — which uses index 0 — is untouched.
-// - Private JWKs live in Vault under the same secret as the Ed25519 keys,
-//   keyed by verificationMethod id (same convention as VcService.getSuite()).
+// - Private keys live in the configured KeyProvider; only signatures come back.
 @Injectable()
 export class JwtSignerService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly vault: VaultService,
     private readonly didService: DidService,
+    private readonly signing: SigningService,
+    private readonly registry: KeyRegistryService,
   ) {}
 
-  // Finds the DID's ES256 verification method, creating one if absent.
-  async ensureES256Key(
-    signerDID: string,
-  ): Promise<{ kid: string; privateJwk: jose.JWK }> {
+  // Returns the DID's ACTIVE P-256 key, creating '#jwt-key-1' inside the KeyProvider if it has none.
+  async ensureES256Key(signerDID: string, ctx: SignContext = {}): Promise<{ kid: string }> {
     let identity: Identity;
     try {
       identity = await this.prisma.identity.findUnique({
@@ -51,46 +52,31 @@ export class JwtSignerService {
     }
     if (!identity) throw new NotFoundException('Signer DID not found!');
 
+    const active = await this.registry.findActive(signerDID, 'P-256');
+    if (active) return { kid: active.id };
+
     const didDoc = this.parseDidDoc(identity);
-    const existing = (didDoc.verificationMethod || []).find(
+    const legacy = (didDoc.verificationMethod || []).find(
       (vm: any) => vm?.publicKeyJwk?.crv === 'P-256',
     );
-    if (existing) {
-      const privateKeys = (await this.vault.readPvtKey(signerDID)) || {};
-      const privateJwk = privateKeys[existing.id]?.privateKeyJwk;
-      if (!privateJwk) {
-        throw new InternalServerErrorException(
-          'ES256 private key missing from vault for ' + existing.id,
-        );
-      }
-      return { kid: existing.id, privateJwk };
+    if (legacy) {
+      throw new InternalServerErrorException(
+        `P-256 key '${legacy.id}' exists on the DID but not in the key registry; run the key migration (yarn keys:migrate)`,
+      );
     }
-    return this.generateES256Key(signerDID, didDoc);
+    return this.generateES256Key(signerDID, didDoc, ctx);
   }
 
-  private async generateES256Key(signerDID: string, didDoc: any) {
+  private async generateES256Key(signerDID: string, didDoc: any, ctx: SignContext) {
     const kid = `${signerDID}#jwt-key-1`;
-    let publicJwk: jose.JWK;
-    let privateJwk: jose.JWK;
-    try {
-      const { publicKey, privateKey } = await jose.generateKeyPair(ES256, {
-        extractable: true,
-      });
-      publicJwk = await jose.exportJWK(publicKey);
-      privateJwk = await jose.exportJWK(privateKey);
-      publicJwk.alg = ES256;
-      publicJwk.use = 'sig';
-      publicJwk.kid = kid;
-    } catch (err) {
-      Logger.error(`Error generating ES256 key pair: ${err}`);
-      throw new InternalServerErrorException('Error generating ES256 key pair');
-    }
-
+    const existing = await this.registry.listByDid(signerDID);
+    const authority = existing[0]?.authority ?? ctx.authority;
+    const jwk = await this.signing.createKey({ keyId: kid, did: signerDID, algorithm: 'P-256', authority });
     const verificationMethod = {
       id: kid,
       type: 'JsonWebKey2020',
       controller: signerDID,
-      publicKeyJwk: publicJwk,
+      publicKeyJwk: { ...jwk, alg: ES256, use: 'sig', kid },
     };
     didDoc.verificationMethod = [
       ...(didDoc.verificationMethod || []),
@@ -113,33 +99,31 @@ export class JwtSignerService {
       });
     } catch (err) {
       Logger.error(`Error updating DID document with ES256 key: ${err}`);
+      await this.signing.discardKey(kid).catch(() => undefined);
       throw new InternalServerErrorException('Error updating DID document');
     }
-    try {
-      await this.vault.mergePvtKey({ [kid]: { privateKeyJwk: privateJwk } }, signerDID);
-    } catch (err) {
-      Logger.error(`Error writing ES256 key to vault: ${err}`);
-      throw new InternalServerErrorException('Error writing ES256 key to vault');
-    }
-    return { kid, privateJwk };
+    return { kid };
   }
 
-  // Signs an arbitrary JSON payload as a compact JWS (ES256).
+  // Signs an arbitrary JSON payload as a compact JWS (ES256). The signing input
+  // is sent to the key provider; the private key never enters this process.
   // The caller controls the claim set; only alg/kid/typ go in the header.
   async signJwt(
     signerDID: string,
     payload: object,
     header: Record<string, any> = {},
+    ctx: SignContext = {},
   ): Promise<string> {
-    const { kid, privateJwk } = await this.ensureES256Key(signerDID);
+    const { kid } = await this.ensureES256Key(signerDID, ctx);
+    const encodedHeader = jose.base64url.encode(JSON.stringify({ ...header, alg: ES256, kid }));
+    const encodedPayload = jose.base64url.encode(JSON.stringify(payload));
     try {
-      const key = await jose.importJWK(privateJwk, ES256);
-      return await new jose.CompactSign(
-        new TextEncoder().encode(JSON.stringify(payload)),
-      )
-        .setProtectedHeader({ ...header, alg: ES256, kid })
-        .sign(key);
+      const signature = await this.signing.sign(
+        kid, new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`), 'jwt', ctx,
+      );
+      return `${encodedHeader}.${encodedPayload}.${jose.base64url.encode(signature)}`;
     } catch (err) {
+      if (err instanceof HttpException) throw err;
       Logger.error('Error signing JWT:', err);
       throw new InternalServerErrorException('Error signing JWT');
     }
@@ -195,6 +179,7 @@ export class JwtSignerService {
     payload: Record<string, any>,
     disclosable: string[] = [],
     header: Record<string, any> = {},
+    ctx: SignContext = {},
   ): Promise<string> {
     const sdPayload: Record<string, any> = { ...payload };
     const disclosures: string[] = [];
@@ -219,7 +204,7 @@ export class JwtSignerService {
     const jws = await this.signJwt(signerDID, sdPayload, {
       typ: 'vc+sd-jwt',
       ...header,
-    });
+    }, ctx);
     return [jws, ...disclosures, ''].join('~');
   }
 
@@ -363,7 +348,7 @@ export class JwtSignerService {
         // EC key, or an Ed25519/RSA LD-proof key) has publicKeyJwk too in
         // the mdoc case, but has nothing to do with what a relying party
         // fetching this endpoint needs.
-        if (vm?.publicKeyJwk && typeof vm.id === 'string' && vm.id.endsWith('#jwt-key-1')) {
+        if (vm?.publicKeyJwk && typeof vm.id === 'string' && /#jwt-key-\d+$/.test(vm.id)) {
           keys.push({ ...vm.publicKeyJwk, kid: vm.publicKeyJwk.kid || vm.id });
         }
       }

@@ -2,14 +2,15 @@ import { NotFoundException, InternalServerErrorException, Logger } from '@nestjs
 import * as jose from 'jose';
 import { JwtSignerService } from './jwt.service';
 import { PrismaService } from '../utils/prisma.service';
-import { VaultService } from '../utils/vault.service';
+import { createInMemoryPrismaMock } from '../utils/test-infra.util';
+import { createTestSigning } from '../keys/testing/test-signing.util';
 import { DidService } from '../did/did.service';
 
 describe('JwtSignerService', () => {
   const signerDID = 'did:rcw:signer-1';
 
   let prisma: { identity: { findUnique: jest.Mock; update: jest.Mock; findMany: jest.Mock } };
-  let vault: { readPvtKey: jest.Mock; mergePvtKey: jest.Mock };
+  let t: ReturnType<typeof createTestSigning>;
   let didService: { resolveDID: jest.Mock };
   let service: JwtSignerService;
 
@@ -19,12 +20,13 @@ describe('JwtSignerService', () => {
 
   beforeEach(() => {
     prisma = { identity: { findUnique: jest.fn(), update: jest.fn(), findMany: jest.fn() } };
-    vault = { readPvtKey: jest.fn(), mergePvtKey: jest.fn() };
+    t = createTestSigning(createInMemoryPrismaMock());
     didService = { resolveDID: jest.fn() };
     service = new JwtSignerService(
       prisma as unknown as PrismaService,
-      vault as unknown as VaultService,
       didService as unknown as DidService,
+      t.signing,
+      t.registry,
     );
   });
 
@@ -39,7 +41,6 @@ describe('JwtSignerService', () => {
       issuerDoc = JSON.parse(data.didDoc);
       return {};
     });
-    vault.mergePvtKey.mockResolvedValue({});
     const jwt = await service.signJwt(signerDID, payload);
     didService.resolveDID.mockResolvedValue(issuerDoc);
     return { jwt, issuerDoc, kid: `${signerDID}#jwt-key-1` };
@@ -52,7 +53,6 @@ describe('JwtSignerService', () => {
       issuerDoc = JSON.parse(data.didDoc);
       return {};
     });
-    vault.mergePvtKey.mockResolvedValue({});
     const sdJwt = await service.signSdJwt(signerDID, payload, disclosable);
     didService.resolveDID.mockResolvedValue(issuerDoc);
     return { sdJwt, issuerDoc };
@@ -63,21 +63,18 @@ describe('JwtSignerService', () => {
   });
 
   describe('ensureES256Key', () => {
-    it('returns the existing kid and Vault key when a P-256 verification method already exists', async () => {
+    it('returns the active P-256 key without creating a new one', async () => {
       const existingVmId = `${signerDID}#jwt-key-1`;
+      await t.signing.createKey({ keyId: existingVmId, did: signerDID, algorithm: 'P-256' });
       prisma.identity.findUnique.mockResolvedValue({
         id: signerDID,
-        didDoc: JSON.stringify(
-          baseDidDoc([{ id: existingVmId, type: 'JsonWebKey2020', publicKeyJwk: { kty: 'EC', crv: 'P-256' } }]),
-        ),
+        didDoc: JSON.stringify(baseDidDoc([{ id: existingVmId, type: 'JsonWebKey2020', publicKeyJwk: { kty: 'EC', crv: 'P-256' } }])),
       });
-      const privateJwk = { kty: 'EC', crv: 'P-256', d: 'secret' };
-      vault.readPvtKey.mockResolvedValue({ [existingVmId]: { privateKeyJwk: privateJwk } });
+      const createSpy = jest.spyOn(t.provider, 'createKey');
 
-      const result = await service.ensureES256Key(signerDID);
-
-      expect(result).toEqual({ kid: existingVmId, privateJwk });
-      expect(vault.mergePvtKey).not.toHaveBeenCalled();
+      expect(await service.ensureES256Key(signerDID)).toEqual({ kid: existingVmId });
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(prisma.identity.update).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when the DID does not exist', async () => {
@@ -90,55 +87,45 @@ describe('JwtSignerService', () => {
       await expect(service.ensureES256Key(signerDID)).rejects.toThrow(InternalServerErrorException);
     });
 
-    it('throws when an existing verification method has no matching Vault key', async () => {
-      const existingVmId = `${signerDID}#jwt-key-1`;
+    it('refuses to silently replace an unmigrated legacy P-256 key', async () => {
       prisma.identity.findUnique.mockResolvedValue({
         id: signerDID,
-        didDoc: JSON.stringify(baseDidDoc([{ id: existingVmId, publicKeyJwk: { crv: 'P-256' } }])),
+        didDoc: JSON.stringify(baseDidDoc([{ id: `${signerDID}#jwt-key-1`, publicKeyJwk: { crv: 'P-256' } }])),
       });
-      vault.readPvtKey.mockResolvedValue({});
-      await expect(service.ensureES256Key(signerDID)).rejects.toThrow(InternalServerErrorException);
+      await expect(service.ensureES256Key(signerDID)).rejects.toThrow('migration');
+      expect(prisma.identity.update).not.toHaveBeenCalled();
     });
 
-    it('creates and persists a new ES256 key when none exists', async () => {
+    it('creates the key in the provider and publishes only its public half', async () => {
       prisma.identity.findUnique.mockResolvedValue({ id: signerDID, didDoc: JSON.stringify(baseDidDoc()) });
       prisma.identity.update.mockResolvedValue({});
-      vault.mergePvtKey.mockResolvedValue({});
 
       const result = await service.ensureES256Key(signerDID);
 
-      expect(result.kid).toBe(`${signerDID}#jwt-key-1`);
-      expect(result.privateJwk).toBeDefined();
-
-      const updateArg = prisma.identity.update.mock.calls[0][0];
-      expect(updateArg.where).toEqual({ id: signerDID });
-      const updatedDoc = JSON.parse(updateArg.data.didDoc);
+      expect(result).toEqual({ kid: `${signerDID}#jwt-key-1` });
+      const updatedDoc = JSON.parse(prisma.identity.update.mock.calls[0][0].data.didDoc);
       expect(updatedDoc.verificationMethod).toHaveLength(1);
-      expect(updatedDoc.verificationMethod[0]).toMatchObject({
-        id: result.kid,
-        type: 'JsonWebKey2020',
-        controller: signerDID,
-      });
+      expect(updatedDoc.verificationMethod[0]).toMatchObject({ id: result.kid, type: 'JsonWebKey2020', controller: signerDID });
+      expect(updatedDoc.verificationMethod[0].publicKeyJwk).toMatchObject({ kty: 'EC', crv: 'P-256', alg: 'ES256', kid: result.kid });
+      expect(updatedDoc.verificationMethod[0].publicKeyJwk.d).toBeUndefined();
       expect(updatedDoc.assertionMethod).toContain(result.kid);
       expect(updatedDoc.authentication).toContain(result.kid);
-
-      const mergeArgs = vault.mergePvtKey.mock.calls[0];
-      expect(mergeArgs[1]).toBe(signerDID);
-      expect(mergeArgs[0][result.kid].privateKeyJwk).toEqual(result.privateJwk);
+      expect(await t.registry.findById(result.kid)).toMatchObject({ algorithm: 'P-256', status: 'ACTIVE' });
     });
 
-    it('throws when persisting the new key to Prisma fails', async () => {
+    it('drops the key record when the DID document cannot be updated', async () => {
       prisma.identity.findUnique.mockResolvedValue({ id: signerDID, didDoc: JSON.stringify(baseDidDoc()) });
       prisma.identity.update.mockRejectedValue(new Error('write failed'));
       await expect(service.ensureES256Key(signerDID)).rejects.toThrow(InternalServerErrorException);
-      expect(vault.mergePvtKey).not.toHaveBeenCalled();
+      expect(await t.registry.findById(`${signerDID}#jwt-key-1`)).toBeNull();
     });
 
-    it('throws when writing the new key to Vault fails', async () => {
+    it('gives the new key the authority of the DID\'s existing keys', async () => {
+      await t.signing.createKey({ keyId: `${signerDID}#key-0`, did: signerDID, algorithm: 'Ed25519', authority: 'moe' });
       prisma.identity.findUnique.mockResolvedValue({ id: signerDID, didDoc: JSON.stringify(baseDidDoc()) });
       prisma.identity.update.mockResolvedValue({});
-      vault.mergePvtKey.mockRejectedValue(new Error('vault down'));
-      await expect(service.ensureES256Key(signerDID)).rejects.toThrow(InternalServerErrorException);
+      const { kid } = await service.ensureES256Key(signerDID, { authority: 'agri' });
+      expect((await t.registry.findById(kid)).authority).toBe('moe');
     });
   });
 
@@ -153,6 +140,16 @@ describe('JwtSignerService', () => {
       didService.resolveDID.mockResolvedValue(issuerDoc);
       const result = await service.verifyJwt(jwt);
       expect(result).toEqual({ verified: true, payload: { sub: 'holder-1', claim: 'value' } });
+    });
+
+    it('signs through the key provider and refuses callers from another authority', async () => {
+      await t.signing.createKey({ keyId: `${signerDID}#jwt-key-1`, did: signerDID, algorithm: 'P-256', authority: 'moe' });
+      prisma.identity.findUnique.mockResolvedValue({ id: signerDID, didDoc: JSON.stringify(baseDidDoc()) });
+      const signSpy = jest.spyOn(t.provider, 'sign');
+      await expect(service.signJwt(signerDID, { a: 1 }, {}, { authority: 'agri' })).rejects.toThrow('not authorised');
+      expect(signSpy).not.toHaveBeenCalled();
+      await expect(service.signJwt(signerDID, { a: 1 }, {}, { authority: 'moe' })).resolves.toMatch(/^ey/);
+      expect(signSpy).toHaveBeenCalledTimes(1);
     });
 
     it('propagates ensureES256Key errors', async () => {
@@ -418,6 +415,12 @@ describe('JwtSignerService', () => {
 
       const result = await service.getJwks();
       expect(result.keys).toEqual([{ ...goodVm.publicKeyJwk, kid: goodVm.id }]);
+    });
+
+    it('keeps rotated JWT keys (#jwt-key-N) in the JWKS', async () => {
+      const rotated = { id: `${signerDID}#jwt-key-2`, publicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x3', y: 'y3' } };
+      prisma.identity.findMany.mockResolvedValue([{ id: signerDID, didDoc: JSON.stringify(baseDidDoc([rotated])) }]);
+      expect((await service.getJwks()).keys).toEqual([{ ...rotated.publicKeyJwk, kid: rotated.id }]);
     });
 
     it('defaults kid to the verification method id when publicKeyJwk.kid is absent', async () => {
