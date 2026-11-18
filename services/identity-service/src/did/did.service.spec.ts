@@ -1,14 +1,14 @@
 import { DidService } from './did.service';
 import { PrismaService } from '../utils/prisma.service';
-import { VaultService } from '../utils/vault.service';
-import { createPrismaServiceOrMock, createVaultServiceOrMock } from '../utils/test-infra.util';
+import { createPrismaServiceOrMock } from '../utils/test-infra.util';
+import { createTestSigning } from '../keys/testing/test-signing.util';
 import { GenerateDidDTO, VerificationKeyType } from './dtos/GenerateDidRequest.dto';
 
 describe('DidService', () => {
   let service: DidService;
   let doc: GenerateDidDTO;
   let prisma: PrismaService;
-  let vault: VaultService;
+  let t: ReturnType<typeof createTestSigning>;
 
   const defaultDoc: GenerateDidDTO = {
     alsoKnownAs: ['C4GT', 'https://www.codeforgovtech.in/'],
@@ -29,8 +29,8 @@ describe('DidService', () => {
   beforeEach(async () => {
     doc = JSON.parse(JSON.stringify(defaultDoc));
     prisma = await createPrismaServiceOrMock();
-    vault = await createVaultServiceOrMock();
-    service = new DidService(prisma, vault);
+    t = createTestSigning(prisma);
+    service = new DidService(prisma, t.signing, t.registry);
     service.signingAlgorithm = 'Ed25519Signature2020';
   });
 
@@ -74,13 +74,10 @@ describe('DidService', () => {
     expect(result.verificationMethod[0].type).toStrictEqual(VerificationKeyType.Ed25519VerificationKey2018.toString());
   });
 
-  it('should generate a web DID with RsaVerificationKey2018 verification key', async () => {
+  it('rejects new RsaVerificationKey2018 keys (not supported by key providers)', async () => {
     doc.method = 'abc';
     doc.keyPairType = VerificationKeyType.RsaVerificationKey2018;
-    const result = await service.generateDID(doc);
-    expect(result).toBeDefined();
-    expect(result.verificationMethod).toBeDefined();
-    expect(result.verificationMethod[0].type).toStrictEqual(VerificationKeyType.RsaVerificationKey2018.toString());
+    await expect(service.generateDID(doc)).rejects.toThrow('RsaVerificationKey2018');
   });
 
   it('should generate a DID with a given ID', async () => {
@@ -106,9 +103,46 @@ describe('DidService', () => {
     await expect(service.generateDID(doc)).rejects.toThrow('Error writing DID to database');
   });
 
-  it('throws InternalServerErrorException when writing the private key to Vault fails', async () => {
-    jest.spyOn(vault, 'writePvtKey').mockRejectedValueOnce(new Error('vault down'));
-    await expect(service.generateDID(doc)).rejects.toThrow('Error writing private key to vault');
+  it('fails without storing a DID when the key provider cannot create the key', async () => {
+    jest.spyOn(t.provider, 'createKey').mockRejectedValueOnce(new Error('key provider down'));
+    doc.id = `did:c4gt:provider-down-${Date.now()}`;
+    await expect(service.generateDID(doc)).rejects.toThrow('key provider down');
+    expect(await prisma.identity.findUnique({ where: { id: doc.id } })).toBeNull();
+  });
+
+  it('removes the key record when the DID cannot be stored', async () => {
+    jest.spyOn(prisma.identity, 'create').mockRejectedValueOnce(new Error('db down'));
+    doc.id = `did:c4gt:db-down-${Date.now()}`;
+    await expect(service.generateDID(doc)).rejects.toThrow('Error writing DID to database');
+    expect(await t.registry.findById(`${doc.id}#key-0`)).toBeNull();
+  });
+
+  it('creates the key in the provider, registers it and publishes only the public key', async () => {
+    const result = await service.generateDID(doc);
+    const keyId = `${result.id}#key-0`;
+    expect(result.verificationMethod[0].id).toBe(keyId);
+    expect(JSON.stringify(result)).not.toMatch(/privateKey/);
+    expect(await t.registry.findById(keyId)).toMatchObject({ did: result.id, algorithm: 'Ed25519', status: 'ACTIVE' });
+  });
+
+  it('registers P-256 keys for JsonWebKey2020', async () => {
+    doc.keyPairType = VerificationKeyType.JsonWebKey2020;
+    const result = await service.generateDID(doc);
+    expect(result.verificationMethod[0].publicKeyJwk.crv).toBe('P-256');
+    expect((await t.registry.findById(`${result.id}#key-0`)).algorithm).toBe('P-256');
+  });
+
+  it('creates keyless DIDs when withKey is false', async () => {
+    const result = await service.generateDID({ ...doc, withKey: false });
+    expect(result.verificationMethod).toBeUndefined();
+    expect(await t.registry.listByDid(result.id)).toEqual([]);
+  });
+
+  it('records the caller authority on the key (token claim wins over the request body)', async () => {
+    const fromToken = await service.generateDID({ ...doc, authority: 'agri' }, { authority: 'moe' });
+    expect((await t.registry.findById(`${fromToken.id}#key-0`)).authority).toBe('moe');
+    const fromBody = await service.generateDID({ ...doc, authority: 'agri' });
+    expect((await t.registry.findById(`${fromBody.id}#key-0`)).authority).toBe('agri');
   });
 
   it('resolve a DID', async () => {

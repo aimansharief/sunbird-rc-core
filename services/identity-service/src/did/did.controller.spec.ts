@@ -55,7 +55,7 @@ describe('DidController', () => {
   });
 
   it('should test DID generation', async () => {
-    const dids = await controller.generateDID(content);
+    const dids = await controller.generateDID(content, {});
     expect(dids).toBeDefined();
     expect(dids).toHaveLength(1);
     expect(dids[0].id).toBeDefined();
@@ -64,7 +64,7 @@ describe('DidController', () => {
 
   it('should test throw DID generation Exception', async () => {
     didService.generateDID.mockRejectedValue(new Error('generate failed'));
-    await expect(controller.generateDID(content)).rejects.toThrow(new InternalServerErrorException('generate failed'));
+    await expect(controller.generateDID(content, {})).rejects.toThrow(new InternalServerErrorException('generate failed'));
   });
 
   it('should test resolveDID', async () => {
@@ -84,7 +84,7 @@ describe('DidController', () => {
     for (let i = 0; i < 10; i++) {
       toGenerate.content.push(content.content[0]);
     }
-    const dids = await controller.generateDID(toGenerate);
+    const dids = await controller.generateDID(toGenerate, {});
     expect(dids).toBeDefined();
     expect(dids).toHaveLength(11);
   });

@@ -1,8 +1,10 @@
-import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../utils/prisma.service';
 import { v4 as uuid } from 'uuid';
-import * as crypto from 'crypto';
-import { VaultService } from '../utils/vault.service';
+import { SigningService } from '../keys/signing.service';
+import { KeyRegistryService } from '../keys/key-registry.service';
+import { SignContext } from '../keys/sign-context';
+import { algorithmForVmType, buildVerificationMethod, isSupportedVmType } from '../keys/verification-method';
 import { Identity } from '@prisma/client';
 import { RSAKeyPair } from 'crypto-ld';
 import { GenerateDidDTO } from './dtos/GenerateDidRequest.dto';
@@ -15,6 +17,13 @@ type KeysType = {
     key: any;
   };
 };
+const DEFAULT_VM_TYPE_FOR_ALGORITHM: Record<string, string> = {
+  Ed25519Signature2020: 'Ed25519VerificationKey2020',
+  Ed25519Signature2018: 'Ed25519VerificationKey2018',
+  JsonWebSignature2020: 'JsonWebKey2020',
+  RsaSignature2018: 'RsaVerificationKey2018',
+};
+
 @Injectable()
 export class DidService {
   keys: KeysType = {
@@ -22,7 +31,11 @@ export class DidService {
   webDidPrefix: string;
   signingAlgorithm: string;
   didResolver: any;
-  constructor(private prisma: PrismaService, private vault: VaultService) {
+  constructor(
+    private prisma: PrismaService,
+    private signing: SigningService,
+    private registry: KeyRegistryService,
+  ) {
     let baseUrl: string = process.env.WEB_DID_BASE_URL;
     this.webDidPrefix = this.getDidPrefixForBaseUrl(baseUrl);
     this.signingAlgorithm = process.env.SIGNING_ALGORITHM;
@@ -106,102 +119,46 @@ export class DidService {
     return verificationKey;
   }
 
-  async generateDID(doc: GenerateDidDTO): Promise<DIDDocument> {
-    // Create a UUID for the DID using uuidv4
+  async generateDID(doc: GenerateDidDTO, ctx: SignContext = {}): Promise<DIDDocument> {
     const didUri: string = this.generateDidUri(doc?.method, doc?.id, doc?.webDidBaseUrl);
+    const withKey = doc?.withKey !== false;
+    let keyId: string | undefined;
+    let verificationMethod: any;
 
-    // Create private/public key pair
-    let authnKeys;
-    let privateKeys: object;
-    let verificationKey =  await this.getVerificationKeyByName(doc?.keyPairType);
-    if(!verificationKey) verificationKey = await this.getVerificationKey(this.signingAlgorithm);
-    try {
-      if (verificationKey?.name === "JsonWebKey2020") {
-        // Plain EC P-256 key, generated via Node crypto directly (no LD-key
-        // library covers this) — needed for mso_mdoc's mandatory COSE_Sign1
-        // (ES256) issuer signature.
-        const { publicKey, privateKey: privKeyObj } = crypto.generateKeyPairSync('ec', {
-          namedCurve: 'prime256v1',
-        });
-        const publicKeyJwk = publicKey.export({ format: 'jwk' }) as any;
-        const privateKeyJwk = privKeyObj.export({ format: 'jwk' }) as any;
-        const keyId = `${didUri}#key-0`;
-        authnKeys = {
-          id: keyId,
-          type: 'JsonWebKey2020',
-          controller: didUri,
-          publicKeyJwk,
-        };
-        privateKeys = { [keyId]: { privateKeyJwk } };
-      } else {
-        const keyPair = await (verificationKey as any)?.key.generate({
-          id: `${didUri}#key-0`,
-          controller: didUri
-        });
-        const exportedKey = await keyPair.export({
-          publicKey: true, privateKey: true, includeContext: true
-        });
-        let privateKey = {};
-        if(verificationKey?.name === "Ed25519VerificationKey2020") {
-          const {privateKeyMultibase, ...rest } = exportedKey;
-          authnKeys = rest;
-          privateKey = {privateKeyMultibase};
-        } else if(verificationKey?.name === "Ed25519VerificationKey2018") {
-          const {privateKeyBase58, ...rest } = exportedKey;
-          authnKeys = rest;
-          privateKey = {privateKeyBase58};
-        } else if(verificationKey?.name === "RsaVerificationKey2018") {
-          const {privateKeyPem, ...rest } = exportedKey;
-          authnKeys = {...rest};
-          privateKey = {privateKeyPem};
-        } else {
-          throw new NotFoundException("VerificationKey type not found");
-        }
-        privateKeys = {
-          [authnKeys.id]: privateKey
-        };
+    if (withKey) {
+      const vmType: string = doc?.keyPairType
+        || DEFAULT_VM_TYPE_FOR_ALGORITHM[this.signingAlgorithm]
+        || 'Ed25519VerificationKey2020';
+      if (vmType === 'RsaVerificationKey2018') {
+        throw new BadRequestException(
+          'RsaVerificationKey2018 keys cannot be created: supported key types are Ed25519VerificationKey2020, Ed25519VerificationKey2018 and JsonWebKey2020',
+        );
       }
-    } catch (err: any) {
-            Logger.error(`Error generating key pair: ${err}`);
-      throw new InternalServerErrorException('Error generating key pair: ' + err.message);
+      if (!isSupportedVmType(vmType)) throw new NotFoundException(`Verification Key '${vmType}' not found`);
+      keyId = `${didUri}#key-0`;
+      const jwk = await this.signing.createKey({
+        keyId, did: didUri, algorithm: algorithmForVmType(vmType), authority: ctx.authority ?? doc?.authority,
+      });
+      verificationMethod = buildVerificationMethod(keyId, didUri, vmType, jwk);
     }
 
-    const keyId = authnKeys?.id;
-
-    // Create a DID Document
     const document: DIDDocument = {
-      '@context': [
-        "https://www.w3.org/ns/did/v1"
-      ],
+      '@context': ['https://www.w3.org/ns/did/v1'],
       id: didUri,
       alsoKnownAs: doc.alsoKnownAs,
       service: doc.services,
-      verificationMethod: [
-        authnKeys,
-      ],
-      authentication: [keyId],
-      assertionMethod: [keyId]
+      ...(withKey
+        ? { verificationMethod: [verificationMethod], authentication: [keyId], assertionMethod: [keyId] }
+        : {}),
     };
 
     try {
-      await this.prisma.identity.create({
-        data: {
-          id: didUri,
-          didDoc: JSON.stringify(document),
-        },
-      });
+      await this.prisma.identity.create({ data: { id: didUri, didDoc: JSON.stringify(document) } });
     } catch (err) {
       Logger.error(`Error writing DID to database ${err}`);
+      if (keyId) await this.signing.discardKey(keyId).catch(() => undefined);
       throw new InternalServerErrorException('Error writing DID to database');
     }
-
-    try {
-      await this.vault.writePvtKey(privateKeys, didUri);
-    } catch (err) {
-      Logger.error(err);
-      throw new InternalServerErrorException('Error writing private key to vault');
-    }
-
     return document;
   }
 

@@ -6,6 +6,7 @@ import {
   Logger,
   Param,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -22,6 +23,7 @@ const { DIDDocument } = require('did-resolver');
 type DIDDocument = typeof DIDDocument;
 import { DidService } from './did.service';
 import { GenerateDidRequestDTO } from './dtos/GenerateDidRequest.dto';
+import { signContextFrom } from '../keys/sign-context';
 const pLimit = require('p-limit');
 const limit = pLimit(100);
 
@@ -37,9 +39,11 @@ export class DidController {
   @Post('/did/generate')
   async generateDID(
     @Body() generateRequest: GenerateDidRequestDTO,
+    @Req() req: any,
   ): Promise<DIDDocument[]> {
+    const ctx = signContextFrom(req);
     const promises = generateRequest.content.map((generateDidDTO) => {
-      return limit(() => this.didService.generateDID(generateDidDTO));
+      return limit(() => this.didService.generateDID(generateDidDTO, ctx));
     });
     try {
       return await Promise.all(promises);

@@ -51,6 +51,19 @@ export class GenerateDidDTO {
     enum: VerificationKeyType
   })
   keyPairType?: VerificationKeyType;
+
+  @ApiProperty({
+    required: false,
+    default: true,
+    description: 'Set false for identifier-only DIDs (credential ids, status lists, schemas) that never sign anything.',
+  })
+  withKey?: boolean;
+
+  @ApiProperty({
+    required: false,
+    description: 'Authority that owns the signing key. Ignored when the caller token carries an authority claim.',
+  })
+  authority?: string;
 }
 
 export class GenerateDidRequestDTO {
