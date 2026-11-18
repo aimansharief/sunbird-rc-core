@@ -5,17 +5,47 @@
 import { PrismaService } from './prisma.service';
 import { VaultService } from './vault.service';
 
-function createInMemoryPrismaMock(): any {
-  const store = new Map<string, any>();
+function createTable(defaults: Record<string, any> = {}) {
+  const rows = new Map<string, any>();
+  const matches = (row: any, where: any = {}) =>
+    Object.entries(where).every(([k, v]: [string, any]) =>
+      v && typeof v === 'object' && Array.isArray(v.in) ? v.in.includes(row[k]) : row[k] === v);
   return {
-    identity: {
-      create: jest.fn(async ({ data }: any) => {
-        const record = { ...data };
-        store.set(data.id, record);
-        return record;
-      }),
-      findUnique: jest.fn(async ({ where }: any) => store.get(where.id) ?? null),
-    },
+    rows,
+    create: jest.fn(async ({ data }: any) => {
+      const now = new Date(Date.now() + rows.size); // strictly increasing createdAt
+      const record = { createdAt: now, updatedAt: now, ...defaults, ...data, id: data.id ?? `${rows.size + 1}` };
+      if (rows.has(record.id)) throw new Error(`Unique constraint failed on id ${record.id}`);
+      rows.set(record.id, record);
+      return record;
+    }),
+    findUnique: jest.fn(async ({ where }: any) => rows.get(where.id) ?? null),
+    findFirst: jest.fn(async ({ where, orderBy }: any = {}) => {
+      const found = [...rows.values()].filter((r) => matches(r, where));
+      if (orderBy?.createdAt === 'desc') found.sort((a, b) => b.createdAt - a.createdAt);
+      return found[0] ?? null;
+    }),
+    findMany: jest.fn(async ({ where }: any = {}) =>
+      [...rows.values()].filter((r) => matches(r, where)).sort((a, b) => a.createdAt - b.createdAt)),
+    update: jest.fn(async ({ where, data }: any) => {
+      const row = rows.get(where.id);
+      if (!row) throw new Error(`Record ${where.id} not found`);
+      Object.assign(row, data, { updatedAt: new Date() });
+      return row;
+    }),
+    delete: jest.fn(async ({ where }: any) => {
+      const row = rows.get(where.id);
+      rows.delete(where.id);
+      return row;
+    }),
+  };
+}
+
+function createInMemoryPrismaMock(): any {
+  return {
+    identity: createTable(),
+    signingKey: createTable({ status: 'ACTIVE' }), // mirrors the DB column default
+    signingAuditLog: createTable(),
     $disconnect: jest.fn(async () => undefined),
   };
 }

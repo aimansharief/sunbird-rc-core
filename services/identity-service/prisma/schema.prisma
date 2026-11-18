@@ -16,3 +16,43 @@ model Identity {
   didDoc           Json
   blockchainStatus Boolean @default(false)
 }
+
+enum SigningKeyStatus {
+  ACTIVE
+  RETIRED
+  REVOKED
+}
+
+// One row per DID verification method whose private key lives in a KeyProvider.
+model SigningKey {
+  id        String           @id // verification method id, e.g. did:rcw:...#key-0
+  did       String
+  provider  String           // KeyProvider.name that holds the key
+  keyRef    String           // key name inside the provider
+  algorithm String           // 'Ed25519' | 'P-256'
+  authority String?
+  status    SigningKeyStatus @default(ACTIVE)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@index([did, algorithm, status])
+}
+
+// Append-only record of every signing attempt. Never stores the payload, only its digest.
+model SigningAuditLog {
+  id            String   @id @default(uuid())
+  keyId         String
+  did           String
+  provider      String
+  algorithm     String
+  authority     String?
+  actor         String?
+  purpose       String   // ldp_vc | jwt | mdoc | x509 | rotation
+  payloadSha256 String
+  outcome       String   // SIGNED | DENIED | FAILED
+  error         String?
+  createdAt     DateTime @default(now())
+
+  @@index([did, createdAt])
+  @@index([keyId, createdAt])
+}
