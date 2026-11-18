@@ -92,7 +92,7 @@ describe('JwtSignerService', () => {
         id: signerDID,
         didDoc: JSON.stringify(baseDidDoc([{ id: `${signerDID}#jwt-key-1`, publicKeyJwk: { crv: 'P-256' } }])),
       });
-      await expect(service.ensureES256Key(signerDID)).rejects.toThrow('migration');
+      await expect(service.ensureES256Key(signerDID)).rejects.toThrow('not in the key registry');
       expect(prisma.identity.update).not.toHaveBeenCalled();
     });
 

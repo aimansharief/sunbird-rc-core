@@ -30,12 +30,4 @@ export class VaultService {
     }
     return { status, vault_config };
   }
-  // Legacy read-only access, used ONLY by src/keys/migration. Do not use for signing.
-  async readPvtKey(name: string, path?: string) {
-    const read = await this.vault.readKVSecret(
-      this.token,
-      path ? path + `/${name}` : `rcw/identity/private_keys/${name}`
-    );
-    return read.data;
-  }
 }

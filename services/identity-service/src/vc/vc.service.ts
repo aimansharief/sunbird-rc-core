@@ -72,7 +72,7 @@ export default class VcService {
     if (!active) {
       throw new BadRequestException(
         `DID '${signerDID}' has no active Ed25519 signing key (JSON-LD signing needs Ed25519; RSA is not supported). ` +
-        'If this DID predates the key-provider migration, run yarn keys:migrate.',
+        'If this DID predates this release, its keys must be migrated to the key provider first.',
       );
     }
     await this.signing.assertCanSign(active.id, 'ldp_vc', ctx);

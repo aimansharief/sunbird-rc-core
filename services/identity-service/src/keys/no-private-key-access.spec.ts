@@ -1,15 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Private keys must never be loaded into identity-service for signing.
-// Only the KV -> key provider migration may read legacy KV secrets.
+// Private keys must never be loaded into, stored by, or read by identity-service.
+// Only the test-only in-memory provider (src/keys/testing) is exempt.
 const ROOT = path.resolve(__dirname, '..');
-const ALLOWED = [
-  path.join('keys', 'migration'),
-  path.join('keys', 'testing'),
-  path.join('utils', 'vault.service.ts'),
-  path.join('utils', 'test-infra.util.ts'),
-];
+const ALLOWED = [path.join('keys', 'testing')];
 const FORBIDDEN = /readPvtKey|writePvtKey|mergePvtKey|privateKeyMultibase|privateKeyBase58|privateKeyPem|privateKeyJwk|extractable:\s*true/;
 
 function walk(dir: string): string[] {
@@ -23,7 +18,7 @@ function walk(dir: string): string[] {
 }
 
 describe('guard: no private key material in runtime code', () => {
-  it('finds no private-key access outside the migration', () => {
+  it('finds no private-key access in runtime code', () => {
     const offenders = walk(ROOT)
       .filter((f) => !ALLOWED.some((a) => path.relative(ROOT, f).startsWith(a)))
       .filter((f) => FORBIDDEN.test(fs.readFileSync(f, 'utf8')))

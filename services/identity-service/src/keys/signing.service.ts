@@ -41,7 +41,7 @@ export class SigningService {
     const key = await this.registry.findById(keyId);
     if (!key) {
       throw new NotFoundException(
-        `No signing key registered for '${keyId}'. DIDs created before this release must be migrated (yarn keys:migrate).`,
+        `No signing key registered for '${keyId}'. DIDs created before this release keep their keys in Vault KV and must have them migrated to the key provider before they can sign.`,
       );
     }
     let reason: string | null = null;

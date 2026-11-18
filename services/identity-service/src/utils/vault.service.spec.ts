@@ -49,19 +49,4 @@ describe('VaultService', () => {
       expect(loggerErrorSpy).toHaveBeenCalledWith('Error in checking vault config: Error: Config read failed');
     });
   });
-
-  describe('readPvtKey', () => {
-    it('should read private key from vault', async () => {
-      const name = 'example';
-      const path = 'path/to/secret';
-      const data = { key: 'value' };
-
-      jest.spyOn(mockVault, 'readKVSecret').mockResolvedValueOnce({ data });
-
-      const result = await vaultService.readPvtKey(name, path);
-
-      expect(result).toEqual(data);
-      expect(mockVault.readKVSecret).toHaveBeenCalledWith((vaultService as any).token, `${path}/${name}`);
-    });
-  });
 });

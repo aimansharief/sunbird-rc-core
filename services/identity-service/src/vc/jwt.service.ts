@@ -61,7 +61,7 @@ export class JwtSignerService {
     );
     if (legacy) {
       throw new InternalServerErrorException(
-        `P-256 key '${legacy.id}' exists on the DID but not in the key registry; run the key migration (yarn keys:migrate)`,
+        `P-256 key '${legacy.id}' exists on the DID but not in the key registry; it must be migrated to the key provider before it can sign`,
       );
     }
     return this.generateES256Key(signerDID, didDoc, ctx);

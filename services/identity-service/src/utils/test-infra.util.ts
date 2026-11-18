@@ -3,7 +3,6 @@
 // minimal in-memory fake when they're not (so `npm test` still runs without
 // docker up). Production code never imports this.
 import { PrismaService } from './prisma.service';
-import { VaultService } from './vault.service';
 
 function createTable(defaults: Record<string, any> = {}) {
   const rows = new Map<string, any>();
@@ -50,13 +49,6 @@ export function createInMemoryPrismaMock(): any {
   };
 }
 
-function createInMemoryVaultMock(): any {
-  const store = new Map<string, any>();
-  return {
-    readPvtKey: jest.fn(async (name: string) => store.get(name) ?? null),
-  };
-}
-
 export async function createPrismaServiceOrMock(): Promise<PrismaService> {
   try {
     const prisma = new PrismaService();
@@ -64,20 +56,5 @@ export async function createPrismaServiceOrMock(): Promise<PrismaService> {
     return prisma;
   } catch {
     return createInMemoryPrismaMock();
-  }
-}
-
-export async function createVaultServiceOrMock(): Promise<VaultService> {
-  const vault = new VaultService();
-  try {
-    await vault.readPvtKey('__connectivity_probe__');
-    return vault;
-  } catch (err: any) {
-    // A genuine 404 (tagged isVaultError by hashi-vault-js) means Vault IS
-    // reachable, the probe key just doesn't exist — use the real client.
-    // Any other error (connection refused, timeout, auth failure) means
-    // Vault isn't usable right now — fall back to the in-memory fake.
-    if (err?.isVaultError && err?.response?.status === 404) return vault;
-    return createInMemoryVaultMock();
   }
 }
