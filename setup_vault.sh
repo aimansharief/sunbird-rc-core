@@ -3,7 +3,7 @@
 # This script does the following things
 # * Start a vault instance with vault/vault.json configuration
 # * Unseal the vault
-# * Create a v2 kv engine
+# * Enable the Transit secrets engine (identity-service signing keys)
 # * Prints the unseal keys and root token
 # * This script does not automatically unseal vault on restarts, it only works with fresh installations
 
@@ -60,10 +60,9 @@ docker-compose -f "$COMPOSE_FILE" exec -T "$SERVICE_NAME" vault operator unseal 
 root_token=$(sed -n 's/Initial Root Token: \(.*\)/\1/p' keys.txt | tr -dc '[:print:]')
 
 if [[ $vault_status == *"Initialized     true"* ]]; then
-    echo "Vault is initialized already. Skipping creating a KV engine"
+    echo "Vault is initialized already. Skipping secrets engine setup"
 else
   sed -i "s/VAULT_TOKEN=.*/VAULT_TOKEN=$root_token/" ".env"
-  docker-compose -f "$COMPOSE_FILE" exec -e VAULT_TOKEN=$root_token -T "$SERVICE_NAME" vault secrets enable -path=kv kv-v2
   docker-compose -f "$COMPOSE_FILE" exec -e VAULT_TOKEN=$root_token -T "$SERVICE_NAME" vault secrets enable transit
 fi
 

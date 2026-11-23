@@ -72,7 +72,6 @@ patch_env "VAULT_ADDR"                  "http://vault:8200"
 patch_env "VAULT_API_ADDR"              "http://vault:8200"
 patch_env "VAULT_ADDRESS"               "http://vault:8200"
 patch_env "VAULT_BASE_URL"              "http://vault:8200/v1/"
-patch_env "VAULT_ROOT_PATH"             "kv"
 patch_env "VAULT_TIMEOUT"               "5000"
 patch_env "VAULT_PROXY"                 "false"
 patch_env "IDENTITY_BASE_URL"           "http://identity:3332"
@@ -147,16 +146,19 @@ if [[ -f "$KEYS_FILE" ]]; then
     fi
 fi
 
-# ── 6. Enable KV secrets engine (first run only) ───────────────────────────────
+# ── 6. Enable the Transit secrets engine (first run only) ──────────────────────
+# identity-service creates and uses signing keys inside Vault Transit; keys never leave Vault.
+# Installations upgraded from v2.1.x keep their existing kv/ data (legacy keys) until the key
+# migration has been run; this script neither creates nor deletes kv/.
 CURRENT_TOKEN=$(grep "^VAULT_TOKEN=" "$ENV_FILE" | cut -d= -f2- | tr -dc '[:print:]')
 [[ -z "$CURRENT_TOKEN" ]] && error "VAULT_TOKEN is empty in $ENV_FILE. Cannot continue."
 
 SECRETS=$($COMPOSE exec -T -e VAULT_TOKEN="$CURRENT_TOKEN" vault vault secrets list 2>&1 || true)
-if echo "$SECRETS" | grep -q "^kv/"; then
-    info "KV secrets engine already enabled at kv/."
+if echo "$SECRETS" | grep -q "^transit/"; then
+    info "Transit secrets engine already enabled at transit/."
 else
-    info "Enabling kv-v2 secrets engine at path 'kv'..."
-    $COMPOSE exec -T -e VAULT_TOKEN="$CURRENT_TOKEN" vault vault secrets enable -path=kv kv-v2
+    info "Enabling transit secrets engine at path 'transit'..."
+    $COMPOSE exec -T -e VAULT_TOKEN="$CURRENT_TOKEN" vault vault secrets enable transit
 fi
 
 # ── 7. Create dedicated databases for V2 Node.js services ─────────────────────

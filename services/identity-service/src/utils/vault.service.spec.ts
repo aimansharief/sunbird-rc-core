@@ -1,4 +1,4 @@
-import { InternalServerErrorException, Logger } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { VaultService } from './vault.service';
 const Vault = require('hashi-vault-js');
 
@@ -22,31 +22,33 @@ describe('VaultService', () => {
     expect(vaultService).toBeDefined();
   });
 
+  it('is created without a KV mount path (keys live in Transit; KV is not used)', () => {
+    const args = (Vault as jest.Mock).mock.calls[(Vault as jest.Mock).mock.calls.length - 2][0];
+    expect(args.rootPath).toBeUndefined();
+  });
+
   describe('checkStatus', () => {
-    it('should return status and vault_config', async () => {
+    it('returns Vault health only and never reads the KV engine', async () => {
       const status = { sealed: false, initialized: true };
-      const vault_config = { example: 'config' };
       jest.spyOn(mockVault, 'healthCheck').mockResolvedValueOnce(status);
-      jest.spyOn(mockVault, 'readKVEngineConfig').mockResolvedValueOnce(vault_config);
+      const kvSpy = jest.spyOn(mockVault, 'readKVEngineConfig');
 
       const result = await vaultService.checkStatus();
 
-      expect(result).toEqual({ status, vault_config });
+      expect(result).toEqual({ status });
       expect(mockVault.healthCheck).toHaveBeenCalled();
-      expect(mockVault.readKVEngineConfig).toHaveBeenCalledWith((vaultService as any).token);
+      expect(kvSpy).not.toHaveBeenCalled();
     });
 
-    it('should handle errors and return default values', async () => {
+    it('logs once and returns undefined status when Vault is unreachable', async () => {
       jest.spyOn(mockVault, 'healthCheck').mockRejectedValueOnce(new Error('Health check failed'));
-      jest.spyOn(mockVault, 'readKVEngineConfig').mockRejectedValueOnce(new Error('Config read failed'));
       const loggerErrorSpy = jest.spyOn(Logger, 'error').mockImplementation();
 
       const result = await vaultService.checkStatus();
 
-      expect(result).toEqual({ status: undefined, vault_config: undefined });
-      expect(loggerErrorSpy).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ status: undefined });
+      expect(loggerErrorSpy).toHaveBeenCalledTimes(1);
       expect(loggerErrorSpy).toHaveBeenCalledWith('Error in checking vault status: Error: Health check failed');
-      expect(loggerErrorSpy).toHaveBeenCalledWith('Error in checking vault config: Error: Config read failed');
     });
   });
 });

@@ -19,8 +19,7 @@ describe('VaultHealthIndicator', () => {
   describe('isHealthy', () => {
     it('should return healthy result if Vault status is initialized and unsealed', async () => {
       jest.spyOn(vaultService, 'checkStatus').mockResolvedValueOnce({
-        status: { sealed: false, initialized: true },
-        vault_config: {}
+        status: { sealed: false, initialized: true }
       }); // Mock successful status check
 
       const result = await vaultHealthIndicator.isHealthy('vault');
@@ -31,8 +30,7 @@ describe('VaultHealthIndicator', () => {
 
     it('should throw InternalServerErrorException if Vault is sealed or not initialized', async () => {
       jest.spyOn(vaultService, 'checkStatus').mockResolvedValueOnce({
-        status: { sealed: true, initialized: false },
-        vault_config: {}
+        status: { sealed: true, initialized: false }
       }); // Mock sealed and not initialized status
 
       await expect(vaultHealthIndicator.isHealthy('vault')).rejects.toThrow(HealthCheckError);

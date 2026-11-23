@@ -55,7 +55,6 @@ root_token=$(sed -n 's/Initial Root Token: \(.*\)/\1/p' keys.txt | tr -dc '[:pri
 
 sed -i "s/VAULT_TOKEN:.*/VAULT_TOKEN: $root_token/" "$COMPOSE_FILE"
 
-docker-compose -f "$COMPOSE_FILE" exec -e VAULT_TOKEN=$root_token -T "$SERVICE_NAME" vault secrets enable -path=kv kv-v2
 docker-compose -f "$COMPOSE_FILE" exec -e VAULT_TOKEN=$root_token -T "$SERVICE_NAME" vault secrets enable transit
 
 echo -e "\nNOTE: STORE THE FOLLOWING KEYS SOMEWHERE SAFELY. THESE ARE USED TO UNSEAL VAULT ON RESTARTS"
