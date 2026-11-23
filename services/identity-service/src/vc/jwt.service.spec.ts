@@ -120,6 +120,24 @@ describe('JwtSignerService', () => {
       expect(await t.registry.findById(`${signerDID}#jwt-key-1`)).toBeNull();
     });
 
+    it('two concurrent first-time requests get the same key and the DID document is updated once', async () => {
+      prisma.identity.findUnique.mockResolvedValue({ id: signerDID, didDoc: JSON.stringify(baseDidDoc()) });
+      prisma.identity.update.mockResolvedValue({});
+      const [a, b] = await Promise.all([service.ensureES256Key(signerDID), service.ensureES256Key(signerDID)]);
+      expect(a).toEqual({ kid: `${signerDID}#jwt-key-1` });
+      expect(b).toEqual(a);
+      expect(prisma.identity.update).toHaveBeenCalledTimes(1);
+      expect((await t.registry.listByDid(signerDID)).filter((k) => k.algorithm === 'P-256')).toHaveLength(1);
+    });
+
+    it('uses the DID\'s own P-256 #key-0 (JsonWebKey2020 DID) instead of creating #jwt-key-1', async () => {
+      await t.signing.createKey({ keyId: `${signerDID}#key-0`, did: signerDID, algorithm: 'P-256' });
+      prisma.identity.findUnique.mockResolvedValue({ id: signerDID, didDoc: JSON.stringify(baseDidDoc()) });
+      const createSpy = jest.spyOn(t.provider, 'createKey');
+      expect(await service.ensureES256Key(signerDID)).toEqual({ kid: `${signerDID}#key-0` });
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
     it('gives the new key the authority of the DID\'s existing keys', async () => {
       await t.signing.createKey({ keyId: `${signerDID}#key-0`, did: signerDID, algorithm: 'Ed25519', authority: 'moe' });
       prisma.identity.findUnique.mockResolvedValue({ id: signerDID, didDoc: JSON.stringify(baseDidDoc()) });

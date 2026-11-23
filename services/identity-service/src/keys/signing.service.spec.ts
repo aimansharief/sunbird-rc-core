@@ -1,6 +1,7 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { KeyAlreadyRegisteredError } from './signing.service';
 import { createPrismaServiceOrMock } from '../utils/test-infra.util';
-import { createTestSigning } from './testing/test-signing.util';
+import { createTestSigning, settle } from './testing/test-signing.util';
 import { verifyWithJwk } from './testing/key-provider.contract';
 import { signContextFrom } from './sign-context';
 
@@ -53,6 +54,39 @@ describe('SigningService', () => {
     const spy = jest.spyOn(prisma.signingAuditLog, 'create').mockRejectedValueOnce(new Error('db down'));
     await expect(t.signing.sign(`${did}#audit`, data, 'ldp_vc')).rejects.toThrow();
     spy.mockRestore();
+  });
+
+  it('audits FAILED and returns 500 when the key provider fails (e.g. Vault sealed or unreachable)', async () => {
+    await t.signing.createKey({ keyId: `${did}#down`, did, algorithm: 'Ed25519' });
+    jest.spyOn(t.provider, 'sign').mockRejectedValueOnce(new Error('Vault is sealed'));
+    await expect(t.signing.sign(`${did}#down`, data, 'ldp_vc')).rejects.toBeInstanceOf(InternalServerErrorException);
+    const rows = await prisma.signingAuditLog.findMany({ where: { keyId: `${did}#down` } });
+    expect(rows[rows.length - 1]).toMatchObject({ outcome: 'FAILED' });
+    expect(rows[rows.length - 1].error).toContain('Vault is sealed');
+  });
+
+  it('refuses REVOKED keys', async () => {
+    await t.signing.createKey({ keyId: `${did}#revoked`, did, algorithm: 'Ed25519' });
+    await t.registry.setStatus(`${did}#revoked`, 'REVOKED');
+    await expect(t.signing.sign(`${did}#revoked`, data, 'ldp_vc')).rejects.toThrow('REVOKED');
+  });
+
+  it('refuses a key recorded for a different provider than the one configured', async () => {
+    await t.registry.register({ id: `${did}#elsewhere`, did, provider: 'azure-keyvault', keyRef: 'x', algorithm: 'P-256' });
+    await expect(t.signing.sign(`${did}#elsewhere`, data, 'jwt'))
+      .rejects.toThrow("held by provider 'azure-keyvault' but this service is configured with 'in-memory'");
+  });
+
+  it('reports a clear conflict when the same key id is registered twice concurrently', async () => {
+    const keyId = `${did}#race`;
+    const results = await settle([
+      t.signing.createKey({ keyId, did, algorithm: 'P-256' }),
+      t.signing.createKey({ keyId, did, algorithm: 'P-256' }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const rejected = results.find((r) => !r.ok) as { ok: false; reason: any };
+    expect(rejected.reason).toBeInstanceOf(KeyAlreadyRegisteredError);
+    expect((await t.registry.listByDid(did)).filter((k) => k.id === keyId)).toHaveLength(1);
   });
 
   it('derives the sign context from request.user', () => {

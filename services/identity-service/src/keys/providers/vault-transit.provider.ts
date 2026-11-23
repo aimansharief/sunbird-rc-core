@@ -11,6 +11,11 @@ export interface VaultTransitOptions {
   timeoutMs?: number;
 }
 
+// Keys are never rotated inside Transit: identity-service rotates by creating a new key and a new DID
+// verification method. So the version published in the DID document is always 1, and signing is pinned
+// to it; a Vault-side rotation (which would otherwise switch signing to v2) cannot silently break signatures.
+const PUBLISHED_KEY_VERSION = 1;
+
 export class VaultTransitProvider implements KeyProvider {
   readonly name = 'vault-transit';
   private readonly http: AxiosInstance;
@@ -42,14 +47,17 @@ export class VaultTransitProvider implements KeyProvider {
     if (key.type !== this.vaultType(alg)) {
       throw new Error(`Vault key '${keyRef}' is ${key.type}, expected ${this.vaultType(alg)}`);
     }
-    const publicKey: string = key.keys[String(key.latest_version)].public_key;
+    const publicKey: string = key.keys[String(PUBLISHED_KEY_VERSION)].public_key;
     return alg === 'Ed25519'
       ? ed25519JwkFromRaw(Buffer.from(publicKey, 'base64'))
       : publicJwkFromPem(publicKey);
   }
 
   async sign(keyRef: string, alg: KeyAlgorithm, data: Uint8Array): Promise<Uint8Array> {
-    const body: Record<string, string> = { input: Buffer.from(data).toString('base64') };
+    const body: Record<string, string | number> = {
+      input: Buffer.from(data).toString('base64'),
+      key_version: PUBLISHED_KEY_VERSION,
+    };
     let path = `/sign/${encodeURIComponent(keyRef)}`;
     if (alg === 'P-256') {
       path += '/sha2-256';

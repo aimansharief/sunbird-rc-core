@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../utils/prisma.service';
 import { resolveSelfContainedDidToJwk } from '../utils/self-contained-did.util';
-import { SigningService } from '../keys/signing.service';
+import { KeyAlreadyRegisteredError, SigningService } from '../keys/signing.service';
 import { KeyRegistryService } from '../keys/key-registry.service';
 import { SignContext } from '../keys/sign-context';
 import { DidService } from '../did/did.service';
@@ -71,7 +71,14 @@ export class JwtSignerService {
     const kid = `${signerDID}#jwt-key-1`;
     const existing = await this.registry.listByDid(signerDID);
     const authority = existing[0]?.authority ?? ctx.authority;
-    const jwk = await this.signing.createKey({ keyId: kid, did: signerDID, algorithm: 'P-256', authority });
+    let jwk: jose.JWK;
+    try {
+      jwk = await this.signing.createKey({ keyId: kid, did: signerDID, algorithm: 'P-256', authority });
+    } catch (err) {
+      // A concurrent request created this DID's JWT key first; use it (it also updates the DID document).
+      if (err instanceof KeyAlreadyRegisteredError) return { kid };
+      throw err;
+    }
     const verificationMethod = {
       id: kid,
       type: 'JsonWebKey2020',

@@ -1,7 +1,8 @@
+import { ConflictException } from '@nestjs/common';
 import { DidService } from './did.service';
 import { PrismaService } from '../utils/prisma.service';
 import { createPrismaServiceOrMock } from '../utils/test-infra.util';
-import { createTestSigning } from '../keys/testing/test-signing.util';
+import { createTestSigning, settle } from '../keys/testing/test-signing.util';
 import { GenerateDidDTO, VerificationKeyType } from './dtos/GenerateDidRequest.dto';
 
 describe('DidService', () => {
@@ -230,7 +231,7 @@ describe('DidService', () => {
         ...(await t.registry.findById(`${created.id}#key-0`)), id: `${created.id}#jwt-key-1`,
       } as any);
       jest.spyOn(t.signing, 'assertCanSign').mockResolvedValueOnce(undefined as any);
-      jest.spyOn(t.registry, 'setStatus').mockResolvedValueOnce(undefined as any);
+      jest.spyOn(t.registry, 'transition').mockResolvedValueOnce(true);
       const rotated = await service.rotateKey(created.id, 'P-256', false, {});
       const added = rotated.verificationMethod[rotated.verificationMethod.length - 1];
       expect(added.id).toBe(`${created.id}#jwt-key-2`);
@@ -241,6 +242,40 @@ describe('DidService', () => {
       const created = await service.generateDID(doc, { authority: 'moe' });
       await expect(service.rotateKey(created.id, 'Ed25519', false, { authority: 'agri' })).rejects.toThrow('not authorised');
       expect((await t.registry.findById(`${created.id}#key-0`)).status).toBe('ACTIVE');
+    });
+
+    it('can rotate repeatedly (#key-0 -> #key-1 -> #key-2)', async () => {
+      const created = await service.generateDID(doc);
+      await service.rotateKey(created.id, 'Ed25519', false, {});
+      const rotated = await service.rotateKey(created.id, 'Ed25519', false, {});
+      expect(rotated.verificationMethod.map((v) => v.id.split('#')[1])).toEqual(['key-0', 'key-1', 'key-2']);
+      expect((await t.registry.findActive(created.id, 'Ed25519')).id).toBe(`${created.id}#key-2`);
+    });
+
+    it('keeps the old key ACTIVE and drops the new key record when the DID document cannot be saved', async () => {
+      const created = await service.generateDID(doc);
+      jest.spyOn(prisma.identity, 'update').mockRejectedValueOnce(new Error('db down'));
+      await expect(service.rotateKey(created.id, 'Ed25519', false, {})).rejects.toThrow('Error updating DID document');
+      expect((await t.registry.findById(`${created.id}#key-0`)).status).toBe('ACTIVE');
+      expect(await t.registry.findById(`${created.id}#key-1`)).toBeNull();
+    });
+
+    it('explains that a pre-existing (unmigrated) key must be migrated before it can be rotated', async () => {
+      const created = await service.generateDID(doc);
+      await t.registry.remove(`${created.id}#key-0`); // simulate a DID created before key providers
+      await expect(service.rotateKey(created.id, 'Ed25519', false, {})).rejects.toThrow('migrated');
+    });
+
+    it('two concurrent rotations: one succeeds, the other gets a 409 conflict', async () => {
+      const created = await service.generateDID(doc);
+      const results = await settle([
+        service.rotateKey(created.id, 'Ed25519', false, {}),
+        service.rotateKey(created.id, 'Ed25519', false, {}),
+      ]);
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
+      const rejected = results.find((r) => !r.ok) as { ok: false; reason: any };
+      expect(rejected.reason).toBeInstanceOf(ConflictException);
+      expect((await t.registry.listByDid(created.id)).filter((k) => k.status === 'ACTIVE')).toHaveLength(1);
     });
 
     it('404s when there is no active key of that algorithm', async () => {

@@ -32,6 +32,11 @@ function createTable(defaults: Record<string, any> = {}) {
       Object.assign(row, data, { updatedAt: new Date() });
       return row;
     }),
+    updateMany: jest.fn(async ({ where, data }: any) => {
+      const hits = [...rows.values()].filter((r) => matches(r, where));
+      hits.forEach((r) => Object.assign(r, data, { updatedAt: new Date() }));
+      return { count: hits.length };
+    }),
     delete: jest.fn(async ({ where }: any) => {
       const row = rows.get(where.id);
       rows.delete(where.id);

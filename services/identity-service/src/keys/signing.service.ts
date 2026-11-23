@@ -1,5 +1,5 @@
 import {
-  ForbiddenException, Inject, Injectable, InternalServerErrorException, Logger, NotFoundException,
+  ConflictException, ForbiddenException, Inject, Injectable, InternalServerErrorException, Logger, NotFoundException,
 } from '@nestjs/common';
 import type { JWK } from 'jose';
 import { PrismaService } from '../utils/prisma.service';
@@ -7,6 +7,14 @@ import { sha256 } from './encoding';
 import { KEY_PROVIDER, KeyAlgorithm, KeyProvider } from './key-provider';
 import { KeyRegistryService, SigningKeyRecord } from './key-registry.service';
 import { SignContext, SignPurpose } from './sign-context';
+
+// Another request registered the same key id first (e.g. two concurrent first-time JWT signings,
+// or two concurrent rotations). The caller decides whether to reuse the winner's key or report 409.
+export class KeyAlreadyRegisteredError extends ConflictException {
+  constructor(public readonly keyId: string) {
+    super(`Signing key '${keyId}' was created concurrently by another request`);
+  }
+}
 
 @Injectable()
 export class SigningService {
@@ -25,9 +33,18 @@ export class SigningService {
   async createKey(p: { keyId: string; did: string; algorithm: KeyAlgorithm; authority?: string | null }): Promise<JWK> {
     const keyRef = KeyRegistryService.buildKeyRef(p.authority);
     const jwk = await this.provider.createKey(keyRef, p.algorithm);
-    await this.registry.register({
-      id: p.keyId, did: p.did, provider: this.provider.name, keyRef, algorithm: p.algorithm, authority: p.authority ?? null,
-    });
+    try {
+      await this.registry.register({
+        id: p.keyId, did: p.did, provider: this.provider.name, keyRef, algorithm: p.algorithm, authority: p.authority ?? null,
+      });
+    } catch (err) {
+      if (await this.registry.findById(p.keyId)) {
+        // Lost a race: the key created above is never used (providers offer no delete to this service).
+        this.logger.warn(`Key id ${p.keyId} already registered; provider key ${keyRef} is orphaned`);
+        throw new KeyAlreadyRegisteredError(p.keyId);
+      }
+      throw err;
+    }
     return jwk;
   }
 
