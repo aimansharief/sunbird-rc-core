@@ -1,7 +1,9 @@
+import * as path from 'path';
 import { KEY_ALGORITHMS, KeyAlgorithm, KeyProvider } from './key-provider';
 import { VaultTransitProvider } from './providers/vault-transit.provider';
 
-const SUPPORTED = ['vault-transit'];
+const SUPPORTED = ['vault-transit', 'custom'];
+const REQUIRED_METHODS = ['capabilities', 'createKey', 'getPublicKey', 'sign'];
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const v = env[name];
@@ -27,9 +29,33 @@ export async function createKeyProvider(env: NodeJS.ProcessEnv = process.env): P
         mount: env.VAULT_TRANSIT_MOUNT || 'transit',
         timeoutMs: Number(env.VAULT_TIMEOUT) || 5000,
       });
+    case 'custom':
+      return loadCustomProvider(required(env, 'KEY_PROVIDER_MODULE'), env);
     default:
       throw new Error(`Unknown KEY_PROVIDER '${name}'. Supported: ${SUPPORTED.join(', ')}`);
   }
+}
+
+// Adopter-supplied provider (e.g. AWS KMS, GCP Cloud KMS): a local JS file exporting
+// createProvider(env): Promise<KeyProvider>. Loaded once at startup; local paths only.
+async function loadCustomProvider(file: string, env: NodeJS.ProcessEnv): Promise<KeyProvider> {
+  if (!path.isAbsolute(file)) throw new Error(`KEY_PROVIDER_MODULE must be an absolute file path, got '${file}'`);
+  let mod: any;
+  try {
+    mod = require(file);
+  } catch (e) {
+    throw new Error(`Cannot load KEY_PROVIDER_MODULE '${file}': ${(e as Error).message}`);
+  }
+  if (typeof mod?.createProvider !== 'function') {
+    throw new Error(`KEY_PROVIDER_MODULE '${file}' must export createProvider(env)`);
+  }
+  const provider = await mod.createProvider(env);
+  const missing = REQUIRED_METHODS.filter((m) => typeof provider?.[m] !== 'function');
+  if (!provider?.name) missing.unshift('name');
+  if (missing.length) {
+    throw new Error(`Custom key provider '${provider?.name ?? file}' is missing: ${missing.join(', ')}`);
+  }
+  return provider;
 }
 
 export async function assertCapabilities(provider: KeyProvider, needed: KeyAlgorithm[]): Promise<void> {
