@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../utils/prisma.service';
 import { v4 as uuid } from 'uuid';
 import { SigningService } from '../keys/signing.service';
@@ -151,89 +151,6 @@ export class DidService {
       throw new InternalServerErrorException('Error writing DID to database');
     }
     return document;
-  }
-
-  private nextKeyId(currentId: string, didDoc: any): string {
-    const ids = new Set((didDoc.verificationMethod || []).map((v: any) => v.id));
-    const m = currentId.match(/^(.*#(?:jwt-)?key-)(\d+)$/);
-    if (!m) return `${currentId}-r${Date.now()}`;
-    let n = Number(m[2]) + 1;
-    while (ids.has(`${m[1]}${n}`)) n++;
-    return `${m[1]}${n}`;
-  }
-
-  // Replaces the DID's active key for `algorithm` with a new provider key.
-  // retire (default): old key stays on the DID document so credentials it signed keep verifying, but can no longer sign.
-  // revoke: old key is removed from the DID document, so nothing it signed verifies any more (key compromise).
-  async rotateKey(did: string, algorithm: 'Ed25519' | 'P-256', revokePrevious: boolean, ctx: SignContext): Promise<DIDDocument> {
-    const identity = await this.prisma.identity.findUnique({ where: { id: did } });
-    if (!identity) throw new NotFoundException(`DID: ${did} not found`);
-    const didDoc: any = JSON.parse(identity.didDoc as string);
-    const current = await this.registry.findActive(did, algorithm);
-    if (!current) {
-      const hasLegacyKey = (didDoc.verificationMethod || []).some((vm: any) =>
-        isSupportedVmType(vm?.type) && algorithmForVmType(vm.type) === algorithm);
-      if (hasLegacyKey) {
-        throw new BadRequestException(
-          `DID '${did}' has a ${algorithm} key created before this release; it must be migrated to the key provider before it can be rotated`,
-        );
-      }
-      throw new NotFoundException(`DID '${did}' has no active ${algorithm} key to rotate`);
-    }
-    await this.signing.assertCanSign(current.id, 'rotation', ctx);
-
-    let oldVm = (didDoc.verificationMethod || []).find((v: any) => v.id === current.id);
-    if (!oldVm) {
-      // Stale read: another rotation may have just saved a newer document.
-      const fresh = await this.prisma.identity.findUnique({ where: { id: did } });
-      const freshVm = fresh && (JSON.parse(fresh.didDoc as string).verificationMethod || []).find((v: any) => v.id === current.id);
-      if (freshVm) throw new ConflictException(`DID '${did}' is being rotated by another request; retry`);
-    }
-    if (!oldVm || !isSupportedVmType(oldVm.type)) {
-      throw new InternalServerErrorException(`Key '${current.id}' has no supported verification method on the DID document`);
-    }
-
-    // Claim the rotation: only one request can move the current key out of ACTIVE.
-    const oldStatus = revokePrevious ? 'REVOKED' : 'RETIRED';
-    if (!(await this.registry.transition(current.id, 'ACTIVE', oldStatus))) {
-      throw new ConflictException(`DID '${did}' is being rotated by another request; retry`);
-    }
-    const restoreOld = () => this.registry.transition(current.id, oldStatus, 'ACTIVE').catch(() => false);
-
-    const newKeyId = this.nextKeyId(current.id, didDoc);
-    let jwk: any;
-    try {
-      jwk = await this.signing.createKey({ keyId: newKeyId, did, algorithm, authority: current.authority });
-    } catch (err) {
-      await restoreOld();
-      throw err;
-    }
-    const newVm = buildVerificationMethod(newKeyId, did, oldVm.type, jwk);
-    if (newVm.publicKeyJwk && oldVm.publicKeyJwk?.alg) {
-      newVm.publicKeyJwk = { ...newVm.publicKeyJwk, alg: oldVm.publicKeyJwk.alg, use: 'sig', kid: newKeyId };
-    }
-
-    didDoc.verificationMethod = [...didDoc.verificationMethod, newVm];
-    for (const rel of ['assertionMethod', 'authentication']) {
-      if (Array.isArray(didDoc[rel]) && didDoc[rel].includes(current.id)) didDoc[rel] = [...didDoc[rel], newKeyId];
-    }
-    if (revokePrevious) {
-      didDoc.verificationMethod = didDoc.verificationMethod.filter((v: any) => v.id !== current.id);
-      for (const rel of ['assertionMethod', 'authentication']) {
-        if (Array.isArray(didDoc[rel])) didDoc[rel] = didDoc[rel].filter((id: string) => id !== current.id);
-      }
-    }
-
-    try {
-      await this.prisma.identity.update({ where: { id: did }, data: { didDoc: JSON.stringify(didDoc) } });
-    } catch (err) {
-      Logger.error(`Error updating DID document during rotation: ${err}`);
-      await this.signing.discardKey(newKeyId).catch(() => undefined);
-      await restoreOld();
-      throw new InternalServerErrorException('Error updating DID document');
-    }
-    Logger.log(`Rotated ${current.id} -> ${newKeyId} (${revokePrevious ? 'revoked' : 'retired'})`);
-    return didDoc;
   }
 
   async resolveDID(id: string): Promise<DIDDocument> {

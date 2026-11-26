@@ -11,7 +11,7 @@ export interface VaultTransitOptions {
   timeoutMs?: number;
 }
 
-// Keys are never rotated inside Transit: identity-service rotates by creating a new key and a new DID
+// Keys are never rotated inside Transit: a replacement key is always a new key with a new DID
 // verification method. So the version published in the DID document is always 1, and signing is pinned
 // to it; a Vault-side rotation (which would otherwise switch signing to v2) cannot silently break signatures.
 const PUBLISHED_KEY_VERSION = 1;

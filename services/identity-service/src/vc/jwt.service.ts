@@ -157,7 +157,7 @@ export class JwtSignerService {
       // key at #key-0 alongside a JWT signing key at #jwt-key-1), and falling
       // back would let a signature made for one purpose validate as if it
       // were made for another, or hide the fact that the token referenced an
-      // unknown/rotated key entirely.
+      // unknown key entirely.
       const vm = kid ? vms.find((m: any) => m.id === kid) : vms[0];
       if (!vm) {
         return {

@@ -42,12 +42,6 @@ export class KeyRegistryService {
     return this.prisma.signingKey.update({ where: { id }, data: { status } });
   }
 
-  // Atomic compare-and-set: changes the status only if it is still `from`. Returns false if another request got there first.
-  async transition(id: string, from: 'ACTIVE' | 'RETIRED' | 'REVOKED', to: 'ACTIVE' | 'RETIRED' | 'REVOKED'): Promise<boolean> {
-    const { count } = await this.prisma.signingKey.updateMany({ where: { id, status: from }, data: { status: to } });
-    return count === 1;
-  }
-
   async remove(id: string): Promise<void> {
     await this.prisma.signingKey.delete({ where: { id } });
   }

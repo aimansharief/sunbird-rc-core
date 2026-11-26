@@ -8,8 +8,8 @@ import { KEY_PROVIDER, KeyAlgorithm, KeyProvider } from './key-provider';
 import { KeyRegistryService, SigningKeyRecord } from './key-registry.service';
 import { SignContext, SignPurpose } from './sign-context';
 
-// Another request registered the same key id first (e.g. two concurrent first-time JWT signings,
-// or two concurrent rotations). The caller decides whether to reuse the winner's key or report 409.
+// Another request registered the same key id first (e.g. two concurrent first-time JWT signings).
+// The caller decides whether to reuse the winner's key or report 409.
 export class KeyAlreadyRegisteredError extends ConflictException {
   constructor(public readonly keyId: string) {
     super(`Signing key '${keyId}' was created concurrently by another request`);

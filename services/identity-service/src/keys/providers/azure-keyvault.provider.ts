@@ -14,7 +14,7 @@ export interface AzureKeyVaultOptions {
 // Keys are created without a release policy, so Key Vault never lets them be exported.
 // Azure has no Ed25519, so only P-256 (ES256) is offered.
 //
-// identity-service rotates by creating a new key, never a new version. Signing is pinned to the key's first
+// A replacement key is always a new key, never a new version. Signing is pinned to the key's first
 // version (the one published in the DID document), so a version added in Azure cannot silently break signatures.
 export class AzureKeyVaultProvider implements KeyProvider {
   readonly name = 'azure-keyvault';

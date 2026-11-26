@@ -1,4 +1,4 @@
-export type SignPurpose = 'ldp_vc' | 'jwt' | 'mdoc' | 'x509' | 'rotation';
+export type SignPurpose = 'ldp_vc' | 'jwt' | 'mdoc' | 'x509';
 
 export interface SignContext {
   actor?: string;      // who asked (JWT sub / preferred_username)

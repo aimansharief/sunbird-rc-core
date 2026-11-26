@@ -47,7 +47,7 @@ model SigningAuditLog {
   algorithm     String
   authority     String?
   actor         String?
-  purpose       String   // ldp_vc | jwt | mdoc | x509 | rotation
+  purpose       String   // ldp_vc | jwt | mdoc | x509
   payloadSha256 String
   outcome       String   // SIGNED | DENIED | FAILED
   error         String?

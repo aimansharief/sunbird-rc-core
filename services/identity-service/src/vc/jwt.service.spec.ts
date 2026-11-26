@@ -435,10 +435,10 @@ describe('JwtSignerService', () => {
       expect(result.keys).toEqual([{ ...goodVm.publicKeyJwk, kid: goodVm.id }]);
     });
 
-    it('keeps rotated JWT keys (#jwt-key-N) in the JWKS', async () => {
-      const rotated = { id: `${signerDID}#jwt-key-2`, publicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x3', y: 'y3' } };
-      prisma.identity.findMany.mockResolvedValue([{ id: signerDID, didDoc: JSON.stringify(baseDidDoc([rotated])) }]);
-      expect((await service.getJwks()).keys).toEqual([{ ...rotated.publicKeyJwk, kid: rotated.id }]);
+    it('keeps every JWT key (#jwt-key-N) in the JWKS', async () => {
+      const extra = { id: `${signerDID}#jwt-key-2`, publicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x3', y: 'y3' } };
+      prisma.identity.findMany.mockResolvedValue([{ id: signerDID, didDoc: JSON.stringify(baseDidDoc([extra])) }]);
+      expect((await service.getJwks()).keys).toEqual([{ ...extra.publicKeyJwk, kid: extra.id }]);
     });
 
     it('defaults kid to the verification method id when publicKeyJwk.kid is absent', async () => {
