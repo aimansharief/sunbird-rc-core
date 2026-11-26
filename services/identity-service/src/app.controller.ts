@@ -14,9 +14,10 @@ export class AppController {
   @Get('/health')
   @HealthCheck()
   public async checkHealth() {
+    const usesVault = (process.env.KEY_PROVIDER || 'vault-transit').trim() === 'vault-transit';
     return this.healthCheckService.check([
       async () => this.prismaIndicator.isHealthy('db'),
-      async () => this.vaultIndicator.isHealthy('vault'),
+      ...(usesVault ? [async () => this.vaultIndicator.isHealthy('vault')] : []),
     ])
   }
 }

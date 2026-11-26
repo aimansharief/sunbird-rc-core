@@ -246,6 +246,15 @@ services:
       - REQUIRED_KEY_ALGORITHMS=${REQUIRED_KEY_ALGORITHMS-Ed25519,P-256}
       - ENFORCE_KEY_AUTHORITY=${ENFORCE_KEY_AUTHORITY-true}
       - AUTHORITY_CLAIM=${AUTHORITY_CLAIM-authority}
+      # KEY_PROVIDER=azure-keyvault (Key Vault Standard, Premium or Managed HSM)
+      - AZURE_KEYVAULT_URL=${AZURE_KEYVAULT_URL-}
+      - AZURE_KEY_PROTECTION=${AZURE_KEY_PROTECTION-hsm}
+      - AZURE_AUTH_METHOD=${AZURE_AUTH_METHOD-}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID-}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID-}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET-}
+      # KEY_PROVIDER=custom (adopter-written provider)
+      - KEY_PROVIDER_MODULE=${KEY_PROVIDER_MODULE-}
     healthcheck:
       test:
         [ "CMD-SHELL", "curl -f http://localhost:3332/health || exit 1" ]

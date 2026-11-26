@@ -9,6 +9,18 @@ export function isSupportedVmType(type: string): type is SupportedVmType {
   return ['Ed25519VerificationKey2020', 'Ed25519VerificationKey2018', 'JsonWebKey2020'].includes(type);
 }
 
+const DEFAULT_VM_TYPE_FOR_SIGNING_ALGORITHM: Record<string, string> = {
+  Ed25519Signature2020: 'Ed25519VerificationKey2020',
+  Ed25519Signature2018: 'Ed25519VerificationKey2018',
+  JsonWebSignature2020: 'JsonWebKey2020',
+  RsaSignature2018: 'RsaVerificationKey2018',
+};
+
+// Key type used when POST /did/generate has no keyPairType.
+export function defaultVmType(signingAlgorithm?: string): string {
+  return DEFAULT_VM_TYPE_FOR_SIGNING_ALGORITHM[signingAlgorithm || ''] || 'Ed25519VerificationKey2020';
+}
+
 export function algorithmForVmType(type: SupportedVmType): KeyAlgorithm {
   return type === 'JsonWebKey2020' ? 'P-256' : 'Ed25519';
 }

@@ -86,5 +86,25 @@ describe('AppController', () => {
         }));
       await expect(appController.checkHealth()).rejects.toThrow(ServiceUnavailableException);
     });
+
+    it('checks Vault only when signing keys are held in Vault Transit', async () => {
+      const original = process.env.KEY_PROVIDER;
+      jest.spyOn(prismaHealthIndicator, 'isHealthy').mockResolvedValue({ db: { status: 'up' } } as HealthIndicatorResult);
+      const vault = jest.spyOn(vaultHealthIndicator, 'isHealthy')
+        .mockRejectedValue(new HealthCheckError('Vault health check failed', null));
+      vault.mockClear();
+      try {
+        process.env.KEY_PROVIDER = 'azure-keyvault';
+        const result = await appController.checkHealth();
+        expect(result.status).toEqual('ok');
+        expect(result.info.vault).toBeUndefined();
+        expect(vault).not.toHaveBeenCalled();
+
+        delete process.env.KEY_PROVIDER; // default is vault-transit
+        await expect(appController.checkHealth()).rejects.toThrow(ServiceUnavailableException);
+      } finally {
+        if (original === undefined) delete process.env.KEY_PROVIDER; else process.env.KEY_PROVIDER = original;
+      }
+    });
   });
 });

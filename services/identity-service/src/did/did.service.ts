@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid';
 import { SigningService } from '../keys/signing.service';
 import { KeyRegistryService } from '../keys/key-registry.service';
 import { SignContext } from '../keys/sign-context';
-import { algorithmForVmType, buildVerificationMethod, isSupportedVmType } from '../keys/verification-method';
+import { algorithmForVmType, buildVerificationMethod, defaultVmType, isSupportedVmType } from '../keys/verification-method';
 import { Identity } from '@prisma/client';
 import { RSAKeyPair } from 'crypto-ld';
 import { GenerateDidDTO } from './dtos/GenerateDidRequest.dto';
@@ -17,13 +17,6 @@ type KeysType = {
     key: any;
   };
 };
-const DEFAULT_VM_TYPE_FOR_ALGORITHM: Record<string, string> = {
-  Ed25519Signature2020: 'Ed25519VerificationKey2020',
-  Ed25519Signature2018: 'Ed25519VerificationKey2018',
-  JsonWebSignature2020: 'JsonWebKey2020',
-  RsaSignature2018: 'RsaVerificationKey2018',
-};
-
 @Injectable()
 export class DidService {
   keys: KeysType = {
@@ -126,9 +119,7 @@ export class DidService {
     let verificationMethod: any;
 
     if (withKey) {
-      const vmType: string = doc?.keyPairType
-        || DEFAULT_VM_TYPE_FOR_ALGORITHM[this.signingAlgorithm]
-        || 'Ed25519VerificationKey2020';
+      const vmType: string = doc?.keyPairType || defaultVmType(this.signingAlgorithm);
       if (vmType === 'RsaVerificationKey2018') {
         throw new BadRequestException(
           'RsaVerificationKey2018 keys cannot be created: supported key types are Ed25519VerificationKey2020, Ed25519VerificationKey2018 and JsonWebKey2020',
