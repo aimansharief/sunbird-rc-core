@@ -21,6 +21,12 @@ See
 
 More documentation can be found [here](https://docs.sunbirdrc.dev/).
 
+### Signing key management
+
+Issuer signing keys are held in a key management system: HashiCorp Vault
+Transit (default), Azure Key Vault / Managed HSM, or a custom provider. See
+[the signing key management setup guide](KEY_MANAGEMENT.md).
+
 ## [Help / Discussion](https://github.com/Sunbird-RC/community/discussions)
 
 ## License
