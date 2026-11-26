@@ -4,6 +4,7 @@
 # * Start a vault instance with vault/vault.json configuration
 # * Unseal the vault
 # * Enable the Transit secrets engine (identity-service signing keys)
+# * Give identity-service a sign-only token in .env (vault-identity-token.sh); the root token stays in keys.txt
 # * Prints the unseal keys and root token
 # * This script does not automatically unseal vault on restarts, it only works with fresh installations
 
@@ -62,9 +63,10 @@ root_token=$(sed -n 's/Initial Root Token: \(.*\)/\1/p' keys.txt | tr -dc '[:pri
 if [[ $vault_status == *"Initialized     true"* ]]; then
     echo "Vault is initialized already. Skipping secrets engine setup"
 else
-  sed -i "s/VAULT_TOKEN=.*/VAULT_TOKEN=$root_token/" ".env"
   docker-compose -f "$COMPOSE_FILE" exec -e VAULT_TOKEN=$root_token -T "$SERVICE_NAME" vault secrets enable transit
 fi
+
+COMPOSE="docker-compose -f $COMPOSE_FILE" VAULT_SERVICE="$SERVICE_NAME" ./vault-identity-token.sh
 
 echo -e "\nNOTE: KEYS ARE STORED IN keys.txt"
 

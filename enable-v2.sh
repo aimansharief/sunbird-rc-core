@@ -132,34 +132,25 @@ else
     done
 fi
 
-# ── 5. Write root token to .env ────────────────────────────────────────────────
-if [[ -f "$KEYS_FILE" ]]; then
-    ROOT_TOKEN=$(sed -n 's/Initial Root Token: \(.*\)/\1/p' "$KEYS_FILE" | tr -dc '[:print:]' || true)
-    if [[ -n "$ROOT_TOKEN" ]]; then
-        CURRENT=$(grep "^VAULT_TOKEN=" "$ENV_FILE" | cut -d= -f2-)
-        if [[ -z "$CURRENT" ]]; then
-            sed -i.bak "s|^VAULT_TOKEN=.*|VAULT_TOKEN=${ROOT_TOKEN}|" "$ENV_FILE"
-            info "VAULT_TOKEN written to $ENV_FILE"
-        else
-            warn "VAULT_TOKEN already has a value — not overwriting"
-        fi
-    fi
-fi
+# ── 5. Read the root token (admin work only; never given to identity-service) ──
+[[ ! -f "$KEYS_FILE" ]] && error "$KEYS_FILE not found. Cannot continue."
+ROOT_TOKEN=$(sed -n 's/Initial Root Token: \(.*\)/\1/p' "$KEYS_FILE" | tr -dc '[:print:]' || true)
+[[ -z "$ROOT_TOKEN" ]] && error "Could not read the root token from $KEYS_FILE. Cannot continue."
 
 # ── 6. Enable the Transit secrets engine (first run only) ──────────────────────
 # identity-service creates and uses signing keys inside Vault Transit; keys never leave Vault.
 # Installations upgraded from v2.1.x keep their existing kv/ data (legacy keys) until the key
 # migration has been run; this script neither creates nor deletes kv/.
-CURRENT_TOKEN=$(grep "^VAULT_TOKEN=" "$ENV_FILE" | cut -d= -f2- | tr -dc '[:print:]')
-[[ -z "$CURRENT_TOKEN" ]] && error "VAULT_TOKEN is empty in $ENV_FILE. Cannot continue."
-
-SECRETS=$($COMPOSE exec -T -e VAULT_TOKEN="$CURRENT_TOKEN" vault vault secrets list 2>&1 || true)
+SECRETS=$($COMPOSE exec -T -e VAULT_TOKEN="$ROOT_TOKEN" vault vault secrets list 2>&1 || true)
 if echo "$SECRETS" | grep -q "^transit/"; then
     info "Transit secrets engine already enabled at transit/."
 else
     info "Enabling transit secrets engine at path 'transit'..."
-    $COMPOSE exec -T -e VAULT_TOKEN="$CURRENT_TOKEN" vault vault secrets enable transit
+    $COMPOSE exec -T -e VAULT_TOKEN="$ROOT_TOKEN" vault vault secrets enable transit
 fi
+
+# ── 6b. Sign-only token for identity-service (replaces a root token in .env) ──
+COMPOSE="$COMPOSE" ./vault-identity-token.sh || error "Could not create identity-service's Vault token."
 
 # ── 7. Create dedicated databases for V2 Node.js services ─────────────────────
 # Each service needs its own clean DB so Prisma migrations don't conflict
