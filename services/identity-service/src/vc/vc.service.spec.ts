@@ -101,8 +101,30 @@ describe('VcService', () => {
   });
 
   describe('additional signature suites', () => {
-    it('refuses JSON-LD signing for a DID without an Ed25519 key', async () => {
-      await expect(service.sign(p256Doc.id, signPayload)).rejects.toThrow(BadRequestException);
+    it('signs a P-256 DID with DataIntegrityProof / ecdsa-rdfc-2019 through the KeyProvider', async () => {
+      const signSpy = jest.spyOn(t.provider, 'sign');
+      const signed: any = await service.sign(p256Doc.id, signPayload);
+      expect(signSpy).toHaveBeenCalledTimes(1);
+      expect(signSpy.mock.calls[0][1]).toBe('P-256');
+      expect(signed.proof).toMatchObject({
+        type: 'DataIntegrityProof',
+        cryptosuite: 'ecdsa-rdfc-2019',
+        verificationMethod: `${p256Doc.id}#key-0`,
+        proofPurpose: 'assertionMethod',
+      });
+      expect(signed['@context']).toContain('https://w3id.org/security/data-integrity/v2');
+    });
+
+    it('verifies an ecdsa-rdfc-2019 proof and rejects a tampered one', async () => {
+      const signed: any = await service.sign(p256Doc.id, signPayload);
+      expect(await service.verify(p256Doc.id, signed)).toBe(true);
+      signed.name = 'Hello changed';
+      expect(await service.verify(p256Doc.id, signed)).toBe(false);
+    });
+
+    it('refuses JSON-LD signing for a DID with no signing key', async () => {
+      const keyless = await didService.generateDID({ alsoKnownAs: [], services: [], method: 'test', withKey: false });
+      await expect(service.sign(keyless.id, signPayload)).rejects.toThrow(BadRequestException);
     });
 
     it('signs and verifies with Ed25519Signature2018 (Ed25519VerificationKey2018)', async () => {

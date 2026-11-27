@@ -22,7 +22,9 @@ export default class VcService {
     Ed25519VerificationKey2018: null,
     Ed25519Signature2018: null,
     RsaVerificationKey2018: null,
-    RsaSignature2018: null
+    RsaSignature2018: null,
+    DataIntegrityProof: null,
+    ecdsaRdfc2019: null
   };
   signTypeForKey = {
     Ed25519VerificationKey2020: "Ed25519Signature2020",
@@ -52,6 +54,10 @@ export default class VcService {
     this.map.Ed25519Signature2018 = Ed25519Signature2018;
     this.map.RsaSignature2018 = jsigs2.suites.RsaSignature2018;
     this.map.RsaVerificationKey2018 = RSAKeyPair;
+    const {DataIntegrityProof} = await import('@digitalbazaar/data-integrity');
+    const {cryptosuite} = await import('@digitalbazaar/ecdsa-rdfc-2019-cryptosuite');
+    this.map.DataIntegrityProof = DataIntegrityProof;
+    this.map.ecdsaRdfc2019 = cryptosuite;
   }
 
   async sign(signerDID: string, toSign: object, ctx: SignContext = {}) {
@@ -68,16 +74,18 @@ export default class VcService {
     if (!did) throw new NotFoundException('Signer DID not found!');
 
     const didDoc = (JSON.parse(did.didDoc as string) as DIDDocument);
-    const active = await this.registry.findActive(signerDID, 'Ed25519');
+    // Ed25519 signs with Ed25519Signature2020/2018; P-256 (e.g. Azure Key Vault) with DataIntegrityProof / ecdsa-rdfc-2019.
+    const active = (await this.registry.findActive(signerDID, 'Ed25519')) ?? (await this.registry.findActive(signerDID, 'P-256'));
     if (!active) {
       throw new BadRequestException(
-        `DID '${signerDID}' has no active Ed25519 signing key (JSON-LD signing needs Ed25519; RSA is not supported). ` +
+        `DID '${signerDID}' has no active Ed25519 or P-256 signing key (RSA is not supported). ` +
         'If this DID predates this release, its keys must be migrated to the key provider first.',
       );
     }
     await this.signing.assertCanSign(active.id, 'ldp_vc', ctx);
     const verificationMethod = (didDoc.verificationMethod || []).find((vm: any) => vm.id === active.id);
-    const signatureType = this.signTypeForKey[verificationMethod?.type];
+    const isP256 = active.algorithm === 'P-256';
+    const signatureType = isP256 ? 'DataIntegrityProof' : this.signTypeForKey[verificationMethod?.type];
     if (!verificationMethod || !signatureType || signatureType === 'RsaSignature2018') {
       throw new InternalServerErrorException(`Active key '${active.id}' has no usable verification method on the DID document`);
     }
@@ -86,13 +94,15 @@ export default class VcService {
     // The suite canonicalises and hashes the document; only those bytes are sent to the key provider.
     const signer = {
       id: verificationMethod.id,
-      algorithm: 'Ed25519',
+      algorithm: active.algorithm,
       sign: async ({ data }: { data: Uint8Array }) => this.signing.sign(verificationMethod.id, data, 'ldp_vc', ctx),
     };
     try {
       return await jsigs.sign({...toSign}, {
         purpose: new AssertionProofPurpose(),
-        suite: new this.map[signatureType]({ signer }),
+        suite: isP256
+          ? new this.map.DataIntegrityProof({ signer, cryptosuite: this.map.ecdsaRdfc2019 })
+          : new this.map[signatureType]({ signer }),
         documentLoader: this.getDocumentLoader(didDoc),
         addSuiteContext: true,
         compactProof: false
@@ -137,6 +147,7 @@ export default class VcService {
       "Ed25519Signature2020": ["Ed25519VerificationKey2020", "JsonWebKey2020", "Ed25519VerificationKey2018"],
       "Ed25519Signature2018": ["Ed25519VerificationKey2018"],
       "RsaSignature2018": ["RsaVerificationKey2018"],
+      "DataIntegrityProof": ["JsonWebKey2020"],
     };
     if(!(signatureType in supportedSignatures)) {
       throw new NotFoundException("Suite for signature type not found");
@@ -145,6 +156,10 @@ export default class VcService {
       throw new NotFoundException("Suite for verification type not found");
     }
     if(!supportedSignatures[signatureType]) await this.init();
+    if(signatureType === "DataIntegrityProof") {
+      // The verifier reads the public key from the verification method itself (via the document loader).
+      return new this.map.DataIntegrityProof({cryptosuite: this.map.ecdsaRdfc2019});
+    }
     let keyPair = await this.map[verificationMethod?.type].from(verificationMethod);
     return new this.map[signatureType]({key: keyPair});
   }
@@ -156,6 +171,15 @@ export default class VcService {
           contextUrl: null,
           documentUrl: url,
           document: didDoc
+        };
+      }
+      // Verification-method URLs (did:...#key-0); DataIntegrityProof loads these directly.
+      const vm = url.includes('#') && (didDoc?.verificationMethod || []).find((v: any) => v.id === url);
+      if(vm) {
+        return {
+          contextUrl: null,
+          documentUrl: url,
+          document: { '@context': didDoc['@context'], ...vm }
         };
       }
       if(DOCUMENTS[url]) {

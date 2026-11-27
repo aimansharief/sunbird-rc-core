@@ -40,6 +40,8 @@ export class CredentialsService {
     Ed25519Signature2018: null,
     RsaVerificationKey2018: null,
     RsaSignature2018: null,
+    DataIntegrityProof: null,
+    ecdsaRdfc2019: null,
     vc: null
   };
   documents: object
@@ -71,6 +73,10 @@ export class CredentialsService {
     this.map.Ed25519Signature2018 = Ed25519Signature2018;
     this.map.RsaSignature2018 = jsigs.suites.RsaSignature2018;
     this.map.RsaVerificationKey2018 = RSAKeyPair;
+    const {DataIntegrityProof} = await import('@digitalbazaar/data-integrity');
+    const {cryptosuite} = await import('@digitalbazaar/ecdsa-rdfc-2019-cryptosuite');
+    this.map.DataIntegrityProof = DataIntegrityProof;
+    this.map.ecdsaRdfc2019 = cryptosuite;
     this.map.vc = vc;
   }
 
@@ -431,12 +437,18 @@ export class CredentialsService {
       "Ed25519Signature2020": ["Ed25519VerificationKey2020", "JsonWebKey2020", "Ed25519VerificationKey2018"],
       "Ed25519Signature2018": ["Ed25519VerificationKey2018"],
       "RsaSignature2018": ["RsaVerificationKey2018"],
+      "DataIntegrityProof": ["JsonWebKey2020"],
     };
     if(!(signatureType in supportedSignatures)) {
       throw new NotFoundException("Suite for signature type not found");
     }
     if(!supportedSignatures[signatureType].includes(verificationMethod?.type)) {
       throw new NotFoundException("Suite for verification type not found");
+    }
+    if(signatureType === "DataIntegrityProof") {
+      // ecdsa-rdfc-2019 (P-256): the verifier reads the public key from the verification method via the document loader.
+      if(!this.map.DataIntegrityProof) await this.init();
+      return new this.map.DataIntegrityProof({cryptosuite: this.map.ecdsaRdfc2019});
     }
     if(!this.map[verificationMethod?.type]) await this.init();
     if(!this.map[verificationMethod?.type]) throw new NotFoundException("Library not loaded");
@@ -451,6 +463,15 @@ export class CredentialsService {
           contextUrl: null,
           documentUrl: url,
           document: didDoc
+        };
+      }
+      // Verification-method URLs (did:...#key-0); DataIntegrityProof loads these directly.
+      const vm = url.includes('#') && (didDoc?.verificationMethod || []).find((v: any) => v.id === url);
+      if(vm) {
+        return {
+          contextUrl: null,
+          documentUrl: url,
+          document: { '@context': didDoc['@context'], ...vm }
         };
       }
       if(DOCUMENTS[url]) {

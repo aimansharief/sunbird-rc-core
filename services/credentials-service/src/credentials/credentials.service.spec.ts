@@ -23,6 +23,7 @@ import { HttpModule, HttpService } from '@nestjs/axios';
 import { execSync } from 'child_process';
 import { NotFoundException } from '@nestjs/common';
 import { DOCUMENTS } from './documents';
+import * as crypto from 'crypto';
 
 const hasWkhtmltopdf = (() => {
   try {
@@ -326,6 +327,64 @@ describe('CredentialsService — mocked unit branches', () => {
       await expect(
         service.getSuite({ type: 'RsaVerificationKey2018' } as any, 'Ed25519Signature2020'),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('verifyCredential — ecdsa-rdfc-2019 (P-256 DataIntegrityProof)', () => {
+    const issuer = 'did:rcw:p256-issuer';
+    const vmId = `${issuer}#key-0`;
+
+    // Signs the way identity-service does for a P-256 key: ECDSA over SHA-256, 64-byte r||s.
+    const signP256 = async () => {
+      const { DataIntegrityProof } = await import('@digitalbazaar/data-integrity');
+      const { cryptosuite } = await import('@digitalbazaar/ecdsa-rdfc-2019-cryptosuite');
+      const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+      const didDoc = {
+        '@context': ['https://www.w3.org/ns/did/v1'],
+        id: issuer,
+        verificationMethod: [{ id: vmId, type: 'JsonWebKey2020', controller: issuer, publicKeyJwk: publicKey.export({ format: 'jwk' }) }],
+        assertionMethod: [vmId],
+      };
+      const signer = {
+        id: vmId,
+        algorithm: 'P-256',
+        sign: async ({ data }) => new Uint8Array(crypto.sign('sha256', data, { key: privateKey, dsaEncoding: 'ieee-p1363' })),
+      };
+      const service = await makeService();
+      const credential = await service.map.vc.issue({
+        credential: {
+          '@context': ['https://www.w3.org/2018/credentials/v1', { grade: 'https://schema.org/grade' }],
+          type: ['VerifiableCredential'],
+          issuer,
+          issuanceDate: '2026-01-01T00:00:00Z',
+          expirationDate: '2099-01-01T00:00:00Z',
+          credentialSubject: { id: 'did:rcw:holder-1', grade: 'A' },
+        },
+        suite: new DataIntegrityProof({ signer, cryptosuite }),
+        documentLoader: service.getDocumentLoader(didDoc as any),
+      });
+      return { didDoc, credential };
+    };
+
+    it('verifies a P-256 credential and rejects a tampered one', async () => {
+      const { didDoc, credential } = await signP256();
+      expect(credential.proof).toMatchObject({ type: 'DataIntegrityProof', cryptosuite: 'ecdsa-rdfc-2019' });
+      const service = await makeService({ identityUtilsService: { resolveDID: jest.fn().mockResolvedValue(didDoc) } });
+
+      const ok: any = await service.verifyCredential(structuredClone(credential));
+      expect(ok.checks[0].proof).toBe('OK');
+
+      const tampered = structuredClone(credential);
+      tampered.credentialSubject.grade = 'B';
+      const bad: any = await service.verifyCredential(tampered);
+      expect(bad.checks[0].proof).toBe('NOK');
+    });
+
+    it('serves verification-method URLs from the DID document', async () => {
+      const { didDoc } = await signP256();
+      const service = await makeService();
+      const result = await service.getDocumentLoader(didDoc as any)(vmId);
+      expect(result.document).toMatchObject({ id: vmId, type: 'JsonWebKey2020' });
     });
   });
 
